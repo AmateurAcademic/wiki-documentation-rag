@@ -1,0 +1,33 @@
+version: '3.8'
+services:
+  chroma:
+    image: ghcr.io/chroma-core/chroma:latest
+    environment:
+      - IS_PERSISTENT=true
+    volumes:
+      - ./chroma-data:/chroma/chroma_storage
+    ports:
+      - "8001:8000"
+
+  ingestion:
+    build: ./ingestion
+    environment:
+      - NEBIUS_API_KEY=${NEBIUS_API_KEY}
+    volumes:
+      - ./data:/app/data
+      - ./chroma-data:/app/chroma-data
+    depends_on:
+      - chroma
+    restart: unless-stopped
+
+  api:
+    build: ./api
+    ports:
+      - "8000:8000"
+    environment:
+      - NEBIUS_API_KEY=${NEBIUS_API_KEY}
+    volumes:
+      - ./chroma-data:/app/chroma-data
+    depends_on:
+      - chroma
+    restart: unless-stopped

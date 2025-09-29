@@ -1,0 +1,102 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment
+.env
+.venv
+venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+
+# Docker
+.dockerignore
+docker-compose.override.yml
+
+# ChromaDB
+chroma-data/
+.chroma/
+
+# Data directories (uncomment if you want to exclude)
+# data/
+# !data/.gitkeep
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+
+# Coverage reports
+htmlcov/
+.coverage
+.coverage.*
+.cache
+
+# Pytest
+.pytest_cache/
+
+# MyPy
+.mypy_cache/
+
+# VS Code
+.vscode/
+
+# IntelliJ
+*.iml
+*.ipr
+*.iws
+.out/
+
+# Mac/Linux
+Thumbs.db
+
+# Windows
+ ehthumbs.db
+ [Tt]humbs.db
+
+# Backup files
+*.bak
+*.backup
+
+# Ignore local configuration files
+config.local
+secrets.yaml
+credentials.json
+
+# Docker build artifacts
+*.tar.gz
