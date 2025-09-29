@@ -37,6 +37,18 @@ The system consists of three main components:
 - Access the API at `http://localhost:8000`
 - Integrate with Open WebUI using the external tool configuration
 
+### Open WebUI Integration
+- Navigate to Open WebUI Admin Panel → External Tools → Manage Tool Servers
+- Add New Tool Server with:
+
+URL: `http://localhost:8000` (or `http://api:8000` if in same Docker network)
+`openapi.json` URL or Path: `/openapi.json`
+Name: "Markdown Document Retriever"
+Description: "Semantic search over wiki documentation"
+  
+The tool will automatically appear in chat interface for RAG queries
+
+
 ## Project Structure
 ```
 project/
