@@ -13,7 +13,7 @@ from rank_bm25 import BM25Okapi
 app = FastAPI(
     title="Minimal Document Retriever API",
     version="1.0.0",
-    description="Hybrid search without LangChain"
+    description="Hybrid search with full ranking and re-ranking pipeline. Results formatted for Open WebUI."
 )
 
 # Pydantic models
@@ -152,7 +152,6 @@ async def run_semantic_search(query_embedding: List[float], k: int, collection):
         return []
     
     try:
-        # CRITICAL FIX: Use query_embeddings instead of query_texts
         results = collection.query(
             query_embeddings=[query_embedding],  # Pre-computed embedding
             n_results=k*2,
@@ -298,7 +297,6 @@ async def retrieve_docs(input: RetrievalQueryInput):
     try:
         responses = []
         for query in input.queries:
-            # FIXED: Use await instead of calling asyncio.run
             ranked_results = await hybrid_search(query, input.k, min(5, input.k))
             
             # Format results for regular API usage
@@ -322,7 +320,6 @@ async def search_documents(request: ToolRequest):
         if not query:
             raise HTTPException(status_code=400, detail="Query parameter is required")
         
-        # FIXED: Use await instead of calling asyncio.run
         ranked_results = await hybrid_search(query, k, rerank_k)
         
         # Format results with natural citation for Open WebUI external tool

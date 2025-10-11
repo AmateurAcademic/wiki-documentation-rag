@@ -7,6 +7,7 @@ from openai import OpenAI
 import chromadb
 
 class MarkdownHandler(FileSystemEventHandler):
+    """Handles file system events for markdown files, processes them, and stores them in ChromaDB."""
     def __init__(self):
         self.last_processed = 0
         
@@ -49,7 +50,7 @@ class MarkdownHandler(FileSystemEventHandler):
             chunk = text[start:split_pos]
             chunks.append({
                 'content': chunk,
-                'metadata': {'start_index': str(start)}  # Convert to string
+                'metadata': {'start_index': str(start)}
             })
             
             # Move start with overlap
@@ -182,7 +183,6 @@ class MarkdownHandler(FileSystemEventHandler):
                 print("Created new collection")
             
             print("Upserting documents to ChromaDB...")
-            # Use upsert() instead of add() for proper updates
             collection.upsert(
                 embeddings=all_embeddings,
                 documents=contents,
