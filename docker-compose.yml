@@ -5,17 +5,18 @@ services:
     environment:
       - IS_PERSISTENT=true
     volumes:
-      - ./chroma_data:/chroma/chroma_storage
+      - ./chroma_data:/data
     ports:
       - "8001:8000"
 
   ingestion:
     build: ./ingestion
+    env_file: .env
     environment:
-      - NEBIUS_API_KEY=${NEBIUS_API_KEY}
+      - CHROMA_HOST=chroma
+      - CHROMA_PORT=8000
     volumes:
       - ./data:/app/data
-      - ./chroma_data:/app/chroma_data
     depends_on:
       - chroma
     restart: unless-stopped
@@ -24,10 +25,10 @@ services:
     build: ./api
     ports:
       - "8000:8000"
+    env_file: .env
     environment:
-      - NEBIUS_API_KEY=${NEBIUS_API_KEY}
-    volumes:
-      - ./chroma_data:/app/chroma_data
+      - CHROMA_HOST=chroma
+      - CHROMA_PORT=8000
     depends_on:
       - chroma
     restart: unless-stopped

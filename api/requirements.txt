@@ -1,7 +1,7 @@
-langchain-core
-langchain-community
-langchain-openai
+openai
 chromadb
+numpy
+rank-bm25
 transformers
 torch
 fastapi

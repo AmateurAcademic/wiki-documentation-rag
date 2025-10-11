@@ -1,19 +1,19 @@
 import os
+import time
 import asyncio
 import numpy as np
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List, Dict, Any
-from langchain_openai import OpenAIEmbeddings
-from langchain_community.vectorstores import Chroma
-from langchain_community.retrievers import BM25Retriever
+from openai import OpenAI
+import chromadb
 from sentence_transformers import CrossEncoder
-import time
+from rank_bm25 import BM25Okapi
 
 app = FastAPI(
-    title="Optimized Document Retriever API",
+    title="Minimal Document Retriever API",
     version="1.0.0",
-    description="Hybrid search with parallel processing and caching",
+    description="Hybrid search without LangChain"
 )
 
 # Pydantic models
@@ -33,11 +33,11 @@ class ToolRequest(BaseModel):
 
 # Application state
 class AppState:
-    embeddings: OpenAIEmbeddings = None
-    vectorstore: Chroma = None
+    client: OpenAI = None
+    chroma_client: chromadb.Client = None
+    collection = None
     reranker: CrossEncoder = None
-    _cached_documents = None
-    _last_cache_update = 0
+    embedding_dim: int = 4096  # Qwen3 Embedding-8B dimension
 
 app_state = AppState()
 
@@ -46,22 +46,38 @@ async def startup_event():
     """Initialize components on startup"""
     try:
         # Validate API key
-        nebius_api_key = os.getenv("NEBIUS_API_KEY")
+        nebius_api_key = os.getenv("NEBIUS_API_KEY", "").strip('"').strip("'")
         if not nebius_api_key:
             raise ValueError("NEBIUS_API_KEY environment variable is not set")
         
-        app_state.embeddings = OpenAIEmbeddings(
-            model="Qwen/Qwen3-Embedding-8B",
-            openai_api_key=nebius_api_key,
-            openai_api_base="https://api.studio.nebius.com/v1/",
-            tiktoken_enabled=False
+        # Get ChromaDB configuration
+        chroma_host = os.getenv("CHROMA_HOST", "chroma")
+        chroma_port = int(os.getenv("CHROMA_PORT", "8000"))
+        
+        # Initialize OpenAI client
+        app_state.client = OpenAI(
+            api_key=nebius_api_key,
+            base_url="https://api.studio.nebius.com/v1/"
         )
         
-        app_state.vectorstore = Chroma(
-            persist_directory="/app/chroma_data",
-            embedding_function=app_state.embeddings
-        )
+        # Initialize ChromaDB HTTP client
+        app_state.chroma_client = chromadb.HttpClient(host=chroma_host, port=chroma_port)
+
+        print("Waiting for ingester to complete...")
+
+        time.sleep(10)
         
+        # Try to get collection with explicit embedding function setting
+        try:
+            app_state.collection = app_state.chroma_client.get_collection(
+                "documents",
+                embedding_function=None  # Critical: Match ingestion setting
+            )
+        except Exception as e:
+            print(f"Collection not ready: {e}")
+            app_state.collection = None
+        
+        # Initialize re-ranker
         app_state.reranker = CrossEncoder('BAAI/bge-reranker-v2-m3')
         
         print("Components initialized successfully")
@@ -69,55 +85,135 @@ async def startup_event():
         print(f"Failed to initialize components: {e}")
         raise
 
-def get_cached_documents():
-    """Cache all documents with metadata"""
-    current_time = time.time()
-    if app_state._cached_documents is None or (current_time - app_state._last_cache_update) > 30:
-        try:
-            app_state._cached_documents = app_state.vectorstore.get()
-            app_state._last_cache_update = current_time
-        except Exception as e:
-            print(f"Error refreshing document cache: {e}")
-            if app_state._cached_documents is None:
-                raise
+def get_bm25_results(query, documents, k=10):
+    """Get BM25 results for hybrid search"""
+    if not documents:
+        return []
     
-    return app_state._cached_documents
+    tokenized_corpus = [doc.split() for doc in documents]
+    bm25 = BM25Okapi(tokenized_corpus)
+    tokenized_query = query.split()
+    scores = bm25.get_scores(tokenized_query)
+    
+    # Get top k results
+    top_indices = np.argpartition(scores, -k)[-k:] if len(scores) > k else range(len(scores))
+    results = [(documents[i], scores[i]) for i in top_indices if i < len(documents)]
+    return sorted(results, key=lambda x: x[1], reverse=True)
 
-def reciprocal_rank_fusion(results_list: List[List], weights: List[float] = None, k: int = 60) -> List:
+def reciprocal_rank_fusion(results_list, weights=None, k=60):
     """Combine multiple result lists using Reciprocal Rank Fusion"""
+    if not results_list or not any(results_list):
+        return []
+    
     if weights is None:
         weights = [1.0] * len(results_list)
     
     # Collect all unique documents
     all_docs = {}
-    for results in results_list:
-        for doc in results:
-            doc_id = hash(doc.page_content) if hasattr(doc, 'page_content') else hash(str(doc))
-            if doc_id not in all_docs:
-                all_docs[doc_id] = doc
-    
-    # Calculate RRF scores
-    scores = {doc_id: 0.0 for doc_id in all_docs}
-    
     for i, results in enumerate(results_list):
-        weight = weights[i] if i < len(weights) else 1.0
-        for rank, doc in enumerate(results):
-            doc_id = hash(doc.page_content) if hasattr(doc, 'page_content') else hash(str(doc))
-            if doc_id in scores:
-                scores[doc_id] += weight * (1.0 / (rank + k))
+        for rank, (doc, score) in enumerate(results):
+            doc_id = hash(doc)
+            if doc_id not in all_docs:
+                all_docs[doc_id] = {
+                    'doc': doc,
+                    'score': 0.0
+                }
+            all_docs[doc_id]['score'] += weights[i] * (1.0 / (rank + k))
     
     # Sort by score
-    sorted_docs = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-    return [(all_docs[doc_id], score) for doc_id, score in sorted_docs]
+    sorted_docs = sorted(all_docs.items(), key=lambda x: x[1]['score'], reverse=True)
+    return [(item[1]['doc'], item[1]['score']) for item in sorted_docs]
 
 def format_result_for_openwebui(doc, score: float) -> str:
     """Format document result with natural citation for Open WebUI external tool"""
-    source = doc.metadata.get('source', 'document')
-    filename = os.path.basename(source) if source else 'document'
-    return f"Source: {filename} (relevance: {score:.2f})\n\n{doc.page_content}"
+    source = "document"
+    content = str(doc)
+    
+    # Handle different document formats
+    if isinstance(doc, dict):
+        content = doc.get('content', str(doc))
+        if 'metadata' in doc and 'source' in doc['metadata']:
+            source = os.path.basename(doc['metadata']['source'])
+    elif hasattr(doc, 'metadata') and hasattr(doc.metadata, 'get'):
+        source_path = doc.metadata.get('source', '')
+        if source_path:
+            source = os.path.basename(source_path)
+    elif isinstance(doc, str) and 'Source: ' in doc:
+        # Extract source from formatted string
+        source_line = doc.split('\n')[0]
+        if source_line.startswith('Source: '):
+            source = source_line.replace('Source: ', '').split()[0]
+    
+    return f"Source: {source} (relevance: {score:.2f})\n\n{content}"
 
-async def optimized_hybrid_search(query: str, k: int = 10, rerank_k: int = 5):
-    """Parallel hybrid search with caching and re-ranking"""
+async def run_semantic_search(query_embedding: List[float], k: int, collection):
+    """Run semantic search with ChromaDB using pre-computed embeddings"""
+    if collection is None:
+        return []
+    
+    try:
+        # CRITICAL FIX: Use query_embeddings instead of query_texts
+        results = collection.query(
+            query_embeddings=[query_embedding],  # Pre-computed embedding
+            n_results=k*2,
+            include=["documents", "distances"]
+        )
+        
+        if not results['documents'][0]:
+            return []
+        
+        # Convert to standard format
+        return list(zip(
+            results['documents'][0],
+            [1.0 - d for d in results['distances'][0]]  # Convert distance to similarity
+        ))
+    except Exception as e:
+        print(f"Semantic search failed: {e}")
+        return []
+
+async def run_bm25_search(query: str, k: int, collection):
+    """Run BM25 keyword search"""
+    if collection is None:
+        return []
+    
+    try:
+        # Get documents for BM25 (exclude embeddings to avoid dimension issues)
+        results = collection.get(
+            include=["documents", "metadatas"],
+            limit=1000
+        )
+        
+        if not results['documents']:
+            return []
+        
+        # Apply BM25 to document contents
+        return get_bm25_results(query, results['documents'], k=k*2)
+    except Exception as e:
+        print(f"BM25 search failed: {e}")
+        return []
+
+async def parallel_search(query_embedding: List[float], query_text: str, k: int = 10):
+    """Run semantic and BM25 search in parallel"""
+    # Execute both searches concurrently
+    semantic_results, bm25_results = await asyncio.gather(
+        run_semantic_search(query_embedding, k, app_state.collection),
+        run_bm25_search(query_text, k, app_state.collection),
+        return_exceptions=True
+    )
+    
+    # Handle exceptions
+    if isinstance(semantic_results, Exception):
+        print(f"Semantic search failed: {semantic_results}")
+        semantic_results = []
+    
+    if isinstance(bm25_results, Exception):
+        print(f"BM25 search failed: {bm25_results}")
+        bm25_results = []
+    
+    return semantic_results, bm25_results
+
+async def hybrid_search(query: str, k: int = 10, rerank_k: int = 5):
+    """Full hybrid search implementation"""
     try:
         # Validate inputs
         if not query or not query.strip():
@@ -126,115 +222,70 @@ async def optimized_hybrid_search(query: str, k: int = 10, rerank_k: int = 5):
         if k <= 0 or rerank_k <= 0:
             raise ValueError("k and rerank_k must be positive integers")
         
-        # Get cached documents
-        all_docs_data = get_cached_documents()
-        
-        if not all_docs_data or not all_docs_data.get('documents'):
-            return []  # No documents to search
-        
-        # Prepare documents for BM25
-        docs_for_bm25 = []
-        documents_content = all_docs_data['documents']
-        metadatas = all_docs_data.get('metadatas', [])
-        
-        for i, content in enumerate(documents_content):
-            metadata = metadatas[i] if i < len(metadatas) else {}
-            doc_obj = type('Document', (), {
-                'page_content': content,
-                'metadata': metadata
-            })()
-            docs_for_bm25.append(doc_obj)
-        
-        if not docs_for_bm25:
-            return []
-        
-        # Parallel search execution
-        async def run_semantic_search():
+        # Check if collection exists
+        if app_state.collection is None:
             try:
-                return app_state.vectorstore.similarity_search_with_score(
-                    query, 
-                    k=min(k*2, len(docs_for_bm25))
+                app_state.collection = app_state.chroma_client.get_collection(
+                    "documents",
+                    embedding_function=None
                 )
-            except Exception as e:
-                print(f"Semantic search error: {e}")
-                return []
+            except Exception:
+                return []  # Collection not ready yet
         
-        async def run_keyword_search():
-            try:
-                bm25 = BM25Retriever.from_documents(docs_for_bm25)
-                bm25.k = min(k*2, len(docs_for_bm25))
-                return bm25.get_relevant_documents(query)
-            except Exception as e:
-                print(f"Keyword search error: {e}")
-                return []
+        # CRITICAL FIX: Generate query embedding with Qwen3
+        response = app_state.client.embeddings.create(
+            input=[query],
+            model="Qwen/Qwen3-Embedding-8B"
+        )
+        query_embedding = response.data[0].embedding
         
-        # Execute both searches concurrently
-        semantic_results, bm25_results = await asyncio.gather(
-            run_semantic_search(),
-            run_keyword_search(),
-            return_exceptions=True
+        # Validate embedding dimension
+        if len(query_embedding) != app_state.embedding_dim:
+            raise ValueError(f"Query embedding dimension mismatch. Expected {app_state.embedding_dim}, got {len(query_embedding)}")
+        
+        # Run semantic and BM25 search in parallel
+        semantic_results, bm25_results = await parallel_search(query_embedding, query, k)
+        
+        # 3. Reciprocal Rank Fusion
+        combined_results = reciprocal_rank_fusion(
+            [semantic_results, bm25_results],
+            weights=[0.5, 0.5]
         )
         
-        # Handle exceptions
-        if isinstance(semantic_results, Exception):
-            print(f"Semantic search failed: {semantic_results}")
-            semantic_results = []
+        # 4. Re-ranking (limit candidates for performance)
+        max_candidates = min(len(combined_results), rerank_k*2, 50)
+        candidate_docs = [doc for doc, _ in combined_results[:max_candidates]]
         
-        if isinstance(bm25_results, Exception):
-            print(f"Keyword search failed: {bm25_results}")
-            bm25_results = []
-        
-        # Extract documents from semantic results
-        semantic_docs = [doc for doc, _ in semantic_results] if semantic_results else []
-        
-        # Hybrid fusion
-        if not semantic_docs and not bm25_results:
-            return []
-        elif not semantic_docs:
-            hybrid_results = [(doc, 1.0/idx) for idx, doc in enumerate(bm25_results, 1)]
-        elif not bm25_results:
-            hybrid_results = [(doc, score) for doc, score in zip(semantic_docs, [1.0]*len(semantic_docs))]
-        else:
-            hybrid_results = reciprocal_rank_fusion(
-                [semantic_docs, bm25_results],
-                weights=[0.5, 0.5],
-                k=60
-            )
-        
-        # Prepare for re-ranking
-        max_candidates = min(len(hybrid_results), k*2, 100)
-        candidate_docs = [doc for doc, _ in hybrid_results[:max_candidates]]
-        candidate_contents = [getattr(doc, 'page_content', str(doc)) for doc in candidate_docs]
-        
-        if not candidate_contents:
-            top_results = hybrid_results[:min(rerank_k, len(hybrid_results))]
+        if not candidate_docs:
+            # Return top results without re-ranking
+            top_results = combined_results[:min(rerank_k, len(combined_results))]
             return [(doc, float(score)) for doc, score in top_results]
         
-        # Re-ranking with error handling
+        # 5. Re-ranking with error handling
         try:
-            rerank_pairs = [(query, content) for content in candidate_contents]
+            rerank_pairs = [(query, doc) for doc in candidate_docs]
             rerank_scores = app_state.reranker.predict(rerank_pairs)
             
-            # Combine scores
+            # 6. Final scoring
             final_results = []
-            for i, (doc, hybrid_score) in enumerate(hybrid_results[:max_candidates]):
+            for i, (doc, rrf_score) in enumerate(combined_results[:max_candidates]):
                 if i < len(rerank_scores):
-                    # Normalize re-rank score using sigmoid
+                    # Normalize re-rank score
                     norm_rerank = 1 / (1 + np.exp(-rerank_scores[i]))
                     # Weighted combination
-                    final_score = 0.7 * hybrid_score + 0.3 * norm_rerank
+                    final_score = 0.7 * rrf_score + 0.3 * norm_rerank
                     final_results.append((doc, final_score))
                 else:
-                    final_results.append((doc, hybrid_score))
+                    final_results.append((doc, rrf_score))
             
-            # Sort by final score and return top results
+            # Sort by final score
             final_results.sort(key=lambda x: x[1], reverse=True)
             return final_results[:min(rerank_k, len(final_results))]
             
         except Exception as e:
             print(f"Re-ranking failed: {e}")
-            # Fall back to hybrid results without re-ranking
-            top_results = hybrid_results[:min(rerank_k, len(hybrid_results))]
+            # Fall back to combined results without re-ranking
+            top_results = combined_results[:min(rerank_k, len(combined_results))]
             return [(doc, float(score)) for doc, score in top_results]
     
     except Exception as e:
@@ -247,11 +298,12 @@ async def retrieve_docs(input: RetrievalQueryInput):
     try:
         responses = []
         for query in input.queries:
-            ranked_results = await optimized_hybrid_search(query, input.k, min(5, input.k))
+            # FIXED: Use await instead of calling asyncio.run
+            ranked_results = await hybrid_search(query, input.k, min(5, input.k))
             
             # Format results for regular API usage
             results = [
-                f"[Score: {score:.2f}] {doc.page_content[:200]}..."  # Truncated preview
+                f"[Score: {score:.2f}] {doc[:200]}..."  # Truncated preview
                 for doc, score in ranked_results
             ]
             responses.append(RetrievedDoc(query=query, results=results))
@@ -270,7 +322,8 @@ async def search_documents(request: ToolRequest):
         if not query:
             raise HTTPException(status_code=400, detail="Query parameter is required")
         
-        ranked_results = await optimized_hybrid_search(query, k, rerank_k)
+        # FIXED: Use await instead of calling asyncio.run
+        ranked_results = await hybrid_search(query, k, rerank_k)
         
         # Format results with natural citation for Open WebUI external tool
         results = [
@@ -288,7 +341,7 @@ async def search_documents(request: ToolRequest):
 @app.get("/specification")
 async def get_specification():
     return {
-        "name": "Ranked Document Retriever",
+        "name": "Minimal Document Retriever",
         "description": "Semantic search with hybrid ranking and re-ranking. Results include natural citation formatting for Open WebUI.",
         "endpoints": [{
             "name": "search_documents",
@@ -309,15 +362,44 @@ async def get_openapi_spec():
 
 @app.get("/")
 async def root():
-    return {"message": "Ranked Document Retriever API for Open WebUI"}
+    return {"message": "Minimal Document Retriever API for Open WebUI"}
 
 @app.get("/health")
 async def health_check():
+    collection_status = "not_ready"
+    if app_state.collection is not None:
+        try:
+            # Check if collection has documents
+            count = app_state.collection.count()
+            collection_status = f"ready ({count} documents)"
+        except:
+            collection_status = "ready (count unavailable)"
+    
     return {
         "status": "healthy", 
         "components": {
-            "embeddings": app_state.embeddings is not None,
-            "vectorstore": app_state.vectorstore is not None,
-            "reranker": app_state.reranker is not None
+            "openai": app_state.client is not None,
+            "chromadb": collection_status,
+            "reranker": app_state.reranker is not None,
+            "embedding_dimension": app_state.embedding_dim
         }
     }
+
+# Test endpoint for debugging
+@app.get("/test_embedding")
+async def test_embedding():
+    if not app_state.client:
+        raise HTTPException(status_code=500, detail="OpenAI client not initialized")
+    
+    try:
+        response = app_state.client.embeddings.create(
+            input=["test query"],
+            model="Qwen/Qwen3-Embedding-8B"
+        )
+        embedding = response.data[0].embedding
+        return {
+            "dimension": len(embedding),
+            "sample_values": embedding[:5]  # First 5 values
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Embedding test failed: {str(e)}")

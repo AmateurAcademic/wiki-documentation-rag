@@ -1,8 +1,4 @@
-langchain-core
-langchain-community
-langchain-openai
+openai
 chromadb
-transformers
-torch
 watchdog
 markdown
