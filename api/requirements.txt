@@ -1,6 +1,9 @@
-fastapi
-uvicorn[standard]
-langchain
+langchain-core
+langchain-community
 langchain-openai
 chromadb
-python-dotenv
+transformers
+torch
+fastapi
+uvicorn[standard]
+sentence-transformers

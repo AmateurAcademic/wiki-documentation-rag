@@ -5,7 +5,7 @@ services:
     environment:
       - IS_PERSISTENT=true
     volumes:
-      - ./chroma-data:/chroma/chroma_storage
+      - ./chroma_data:/chroma/chroma_storage
     ports:
       - "8001:8000"
 
@@ -15,7 +15,7 @@ services:
       - NEBIUS_API_KEY=${NEBIUS_API_KEY}
     volumes:
       - ./data:/app/data
-      - ./chroma-data:/app/chroma-data
+      - ./chroma_data:/app/chroma_data
     depends_on:
       - chroma
     restart: unless-stopped
@@ -27,7 +27,7 @@ services:
     environment:
       - NEBIUS_API_KEY=${NEBIUS_API_KEY}
     volumes:
-      - ./chroma-data:/app/chroma-data
+      - ./chroma_data:/app/chroma_data
     depends_on:
       - chroma
     restart: unless-stopped

@@ -100,3 +100,6 @@ credentials.json
 
 # Docker build artifacts
 *.tar.gz
+
+# Ignore chroma_data directory
+chroma_data/
