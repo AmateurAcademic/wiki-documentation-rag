@@ -1,34 +1,59 @@
 version: '3.8'
+
 services:
   chroma:
     image: ghcr.io/chroma-core/chroma:latest
     environment:
       - IS_PERSISTENT=true
     volumes:
-      - ./chroma_data:/data
+      - chroma_data:/data
     ports:
       - "8001:8000"
+    networks:
+      - internal
+    deploy:
+      restart_policy:
+        condition: any
 
   ingestion:
-    build: ./ingestion
-    env_file: .env
+    image: ghcr.io/amateuracademic/wiki-rag-ingestion:latest
+    depends_on:
+      - chroma
     environment:
       - CHROMA_HOST=chroma
       - CHROMA_PORT=8000
+      - NEBIUS_API_KEY=${NEBIUS_API_KEY}
     volumes:
       - ./data:/app/data
-    depends_on:
-      - chroma
-    restart: unless-stopped
+    networks:
+      - internal
+    deploy:
+      restart_policy:
+        condition: any
 
   api:
-    build: ./api
-    ports:
-      - "8000:8000"
-    env_file: .env
+    image: ghcr.io/amateuracademic/wiki-rag-api:latest
+    depends_on:
+      - chroma
     environment:
       - CHROMA_HOST=chroma
       - CHROMA_PORT=8000
-    depends_on:
-      - chroma
-    restart: unless-stopped
+      - NEBIUS_API_KEY=${NEBIUS_API_KEY}
+    ports:
+      - "${API_PORT:-8000}:8000"
+    networks:
+      - proxy      # For external access via NPM
+      - internal   # For chroma communication
+    deploy:
+      restart_policy:
+        condition: any
+
+volumes:
+  chroma_data:
+
+networks:
+  proxy:
+    external: true  # For Nginx Proxy Manager
+  internal:
+    driver: overlay
+    attachable: true
