@@ -24,7 +24,7 @@ services:
       - CHROMA_PORT=8000
       - NEBIUS_API_KEY=${NEBIUS_API_KEY}
     volumes:
-      - ./data:/app/data
+      - /root/docker_data/wiki:/app/data/markdown
     networks:
       - internal
     deploy:
