@@ -10,6 +10,74 @@ class MarkdownHandler(FileSystemEventHandler):
     """Handles file system events for markdown files, processes them, and stores them in ChromaDB."""
     def __init__(self):
         self.last_processed = 0
+
+    def get_chroma_client(self, host, port, max_wait_time=120, initial_delay=2, max_delay=10):
+        """
+        Wait for ChromaDB to be fully ready before returning a client.
+            
+        Args:
+            host: ChromaDB host
+            port: ChromaDB port
+            max_wait_time: Maximum time to wait in seconds
+            initial_delay: Initial delay between retries in seconds
+            max_delay: Maximum delay between retries in seconds
+            
+        Returns:
+            A working ChromaDB client
+            """
+        start_time = time.time()
+        delay = initial_delay
+        
+        print(f"Waiting for ChromaDB at {host}:{port} to become available (max wait: {max_wait_time}s)...", flush=True)
+        
+        while time.time() - start_time < max_wait_time:
+            try:
+                # Create client
+                client = chromadb.HttpClient(host=host, port=port)
+                
+                # CRITICAL: Actually verify connectivity with a lightweight API call
+                # This triggers the real connection attempt
+                client.get_user_identity()
+                elapsed = time.time() - start_time
+                print(f"Successfully connected to ChromaDB at {host}:{port}! (took {elapsed:.1f}s)")
+                return client
+            except Exception as e:
+                elapsed = time.time() - start_time
+                print(f"ChromaDB not ready yet ({elapsed:.1f}s elapsed) - error: {str(e)}")
+                print(f"Retrying in {delay} seconds...")
+                
+                time.sleep(delay)
+                
+                # Exponential backoff with ceiling
+                delay = min(delay * 1.5, max_delay)
+        
+        # If we timed out
+        raise ConnectionError(f"ChromaDB at {host}:{port} not available after {max_wait_time} seconds")
+
+    def load_markdown_files(self, markdown_dir):
+        """Load markdown files from the specified directory"""
+        print(f"Searching for markdown files in: {markdown_dir}")
+        documents = []
+        for filepath in glob.glob(f"{markdown_dir}/**/*.md", recursive=True):
+            print(f"Loading file: {filepath}")
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    documents.append({
+                        'content': content,
+                        'metadata': {'source': filepath}
+                    })
+            except Exception as e:
+                print(f"Error loading {filepath}: {str(e)}")
+                continue
+        
+        print(f"Loaded {len(documents)} documents")
+        
+        if not documents:
+            print("No documents to process - checking if this is expected")
+            return
+        
+        return documents
         
     def on_modified(self, event):
         if event.is_directory:
@@ -60,16 +128,48 @@ class MarkdownHandler(FileSystemEventHandler):
         
         return chunks
     
+    def generate_embeddings(self, client, contents, embedding_dimensions=4096, model="Qwen/Qwen3-Embedding-8B"):
+        """Generate embeddings using the OpenAI API, defaulting to Qwen3 Embedding-8B with 4096 dimensions"""
+        # Generate embeddings
+        
+        print("Generating embeddings...")
+        
+        # Batch process to avoid rate limits
+        all_embeddings = []
+        batch_size = 10
+        
+        for i in range(0, len(contents), batch_size):
+            batch = contents[i:i+batch_size]
+            try:
+                print(f"Generating embeddings for batch {i//batch_size + 1}/{(len(contents)-1)//batch_size + 1}")
+                response = client.embeddings.create(
+                    input=batch,
+                    model=model
+                )
+                batch_embeddings = [item.embedding for item in response.data]
+                all_embeddings.extend(batch_embeddings)
+                
+                # Verify embedding dimensions
+                if batch_embeddings and len(batch_embeddings[0]) != embedding_dimensions:
+                    print(f"Warning: Embedding dimension mismatch. Expected {embedding_dimensions}, got {len(batch_embeddings[0])}")
+                    embedding_dimensions = len(batch_embeddings[0])
+            except Exception as e:
+                print(f"Error generating embeddings for batch {i//batch_size}: {str(e)}")
+                # Use correct dimension even on error
+                all_embeddings.extend([[0.0] * embedding_dimensions for _ in batch])
+        
+        print(f"Generated {len(all_embeddings)} embeddings")
+        return all_embeddings
+    
     def process_documents(self):
+        """Process markdown documents and store them in ChromaDB."""
         print("=== DOCUMENT PROCESSING STARTED ===")
         try:
             # Debug: Check directory structure
             data_dir = "/app/data"
             markdown_dir = "/app/data/markdown"
-            
             print(f"Data directory exists: {os.path.exists(data_dir)}")
             print(f"Markdown directory exists: {os.path.exists(markdown_dir)}")
-            
             if os.path.exists(markdown_dir):
                 print(f"Markdown dir contents: {os.listdir(markdown_dir)}")
             else:
@@ -80,93 +180,48 @@ class MarkdownHandler(FileSystemEventHandler):
             nebius_api_key = os.getenv("NEBIUS_API_KEY", "").strip('"').strip("'")
             if not nebius_api_key:
                 raise ValueError("NEBIUS_API_KEY environment variable is not set")
-            
             print("API key found, initializing clients...")
             
             # Get ChromaDB configuration
             chroma_host = os.getenv("CHROMA_HOST", "chroma")
             chroma_port = int(os.getenv("CHROMA_PORT", "8000"))
             
+            # Wait for ChromaDB with our dedicated function
+            print("Waiting for ChromaDB to be ready...")
+            chroma_client = self.get_chroma_client(chroma_host, chroma_port)
+            
             # Initialize OpenAI client
             client = OpenAI(
                 api_key=nebius_api_key,
                 base_url="https://api.studio.nebius.com/v1/"
             )
-            
-            # Initialize ChromaDB HTTP client
-            chroma_client = chromadb.HttpClient(host=chroma_host, port=chroma_port)
-            print(f"Connected to ChromaDB at {chroma_host}:{chroma_port}")
-            
-            # Load markdown files
-            print(f"Searching for markdown files in: {markdown_dir}")
-            documents = []
-            for filepath in glob.glob(f"{markdown_dir}/**/*.md", recursive=True):
-                print(f"Loading file: {filepath}")
-                try:
-                    with open(filepath, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                        documents.append({
-                            'content': content,
-                            'metadata': {'source': filepath}
-                        })
-                except Exception as e:
-                    print(f"Error loading {filepath}: {str(e)}")
-                    continue
-            
-            print(f"Loaded {len(documents)} documents")
-            
+                 
+            documents = self.load_markdown_files(markdown_dir)
             if not documents:
-                print("No documents to process - checking if this is expected")
                 return
             
             # Split documents
             all_chunks = []
-            for doc in documents:
+            for document in documents:
                 chunks = self.recursive_character_text_splitter(
-                    doc['content'], 
+                    document['content'], 
                     chunk_size=1000, 
                     overlap=200
                 )
                 for chunk in chunks:
                     # Convert all metadata values to strings
                     chunk['metadata'].update({
-                        'source': doc['metadata']['source'],
-                        'original_length': str(len(doc['content']))
+                        'source': document['metadata']['source'],
+                        'original_length': str(len(document['content']))
                     })
                 all_chunks.extend(chunks)
             
             print(f"Split into {len(all_chunks)} chunks")
+
+            contents = [chunk['content'] for chunk in all_chunks]
             
             # Generate embeddings
-            contents = [chunk['content'] for chunk in all_chunks]
-            print("Generating embeddings...")
-            
-            # Batch process to avoid rate limits
-            all_embeddings = []
-            batch_size = 10
-            embedding_dim = 4096  # Qwen3 Embedding-8B dimension
-            
-            for i in range(0, len(contents), batch_size):
-                batch = contents[i:i+batch_size]
-                try:
-                    print(f"Generating embeddings for batch {i//batch_size + 1}/{(len(contents)-1)//batch_size + 1}")
-                    response = client.embeddings.create(
-                        input=batch,
-                        model="Qwen/Qwen3-Embedding-8B"
-                    )
-                    batch_embeddings = [item.embedding for item in response.data]
-                    all_embeddings.extend(batch_embeddings)
-                    
-                    # Verify embedding dimensions
-                    if batch_embeddings and len(batch_embeddings[0]) != embedding_dim:
-                        print(f"Warning: Embedding dimension mismatch. Expected {embedding_dim}, got {len(batch_embeddings[0])}")
-                        embedding_dim = len(batch_embeddings[0])
-                except Exception as e:
-                    print(f"Error generating embeddings for batch {i//batch_size}: {str(e)}")
-                    # Use correct dimension even on error
-                    all_embeddings.extend([[0.0] * embedding_dim for _ in batch])
-            
-            print(f"Generated {len(all_embeddings)} embeddings")
+            all_embeddings = self.generate_embeddings(client, contents)
             
             # Store in ChromaDB
             try:
@@ -203,7 +258,7 @@ def main():
     time.sleep(3)  # Small delay for service readiness
     print("Starting document watcher...", flush=True)
     print(f"Current working directory: {os.getcwd()}", flush=True)
-    print(f"Data directory contents: {os.listdir('/app') if os.path.exists('/app') else 'NOT FOUND'}", flush=True)
+    print(f"Data directory contents: {os.listdir('/app/data/markdown') if os.path.exists('/app/data/markdown') else 'NOT FOUND'}", flush=True)
     
     handler = MarkdownHandler()
     print("Running initial document processing...", flush=True)
