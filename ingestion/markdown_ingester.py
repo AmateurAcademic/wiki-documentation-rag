@@ -18,6 +18,33 @@ class MarkdownHandler(FileSystemEventHandler):
         self.state_file = "/app/data/.git_processing_state.json"
         self.branch_name = None
 
+    def _verify_git_installed(self):
+        """Verify Git is installed and working"""
+        try:
+            subprocess.run(
+                ["git", "--version"],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            return True
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            return False
+
+    def _is_git_repo(self):
+        """Verify we're in a Git repository"""
+        try:
+            subprocess.run(
+                ["git", "rev-parse", "--git-dir"],
+                cwd=self.markdown_dir,  # Use markdown_dir, not data_dir
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            return True
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            return False
+
     def get_chroma_client(self, host, port, max_wait_time=120, initial_delay=2, max_delay=10):
         """
         Wait for ChromaDB to be fully ready before returning a client.
