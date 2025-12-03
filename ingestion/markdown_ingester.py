@@ -1,6 +1,9 @@
 import os
 import time
 import glob
+import json
+import hashlib
+import subprocess
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from openai import OpenAI
@@ -10,6 +13,10 @@ class MarkdownHandler(FileSystemEventHandler):
     """Handles file system events for markdown files, processes them, and stores them in ChromaDB."""
     def __init__(self):
         self.last_processed = 0
+        self.data_dir = "/app/data"
+        self.markdown_dir = "/app/data/markdown"
+        self.state_file = "/app/data/.git_processing_state.json"
+        self.branch_name = None
 
     def get_chroma_client(self, host, port, max_wait_time=120, initial_delay=2, max_delay=10):
         """
@@ -166,8 +173,8 @@ class MarkdownHandler(FileSystemEventHandler):
         print("=== DOCUMENT PROCESSING STARTED ===")
         try:
             # Debug: Check directory structure
-            data_dir = "/app/data"
-            markdown_dir = "/app/data/markdown"
+            data_dir = self.data_dir
+            markdown_dir = self.markdown_dir
             print(f"Data directory exists: {os.path.exists(data_dir)}")
             print(f"Markdown directory exists: {os.path.exists(markdown_dir)}")
             if os.path.exists(markdown_dir):
@@ -258,15 +265,16 @@ def main():
     time.sleep(3)  # Small delay for service readiness
     print("Starting document watcher...", flush=True)
     print(f"Current working directory: {os.getcwd()}", flush=True)
-    print(f"Data directory contents: {os.listdir('/app/data/markdown') if os.path.exists('/app/data/markdown') else 'NOT FOUND'}", flush=True)
-    
     handler = MarkdownHandler()
+    markdown_dir = MarkdownHandler().markdown_dir
+    print(f"Data directory contents: {os.listdir(markdown_dir) if os.path.exists(markdown_dir) else 'NOT FOUND'}", flush=True)
+    
     print("Running initial document processing...", flush=True)
     handler.process_documents()  # Initial processing
     
     print("Setting up file watcher...", flush=True)
     observer = Observer()
-    observer.schedule(handler, "/app/data/markdown", recursive=True)
+    observer.schedule(handler, markdown_dir, recursive=True)
     observer.start()
     print("File watcher started - monitoring for changes...", flush=True)
     
