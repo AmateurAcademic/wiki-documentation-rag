@@ -45,6 +45,78 @@ class MarkdownHandler(FileSystemEventHandler):
         except (subprocess.CalledProcessError, FileNotFoundError):
             return False
 
+    def _save_last_processed_commit(self, commit_hash):
+        """Atomic write to prevent state file corruption"""
+        temp_file = self.state_file + ".tmp"
+        try:
+            with open(temp_file, 'w', encoding='utf-8') as f:
+                json.dump({'last_processed_commit': commit_hash}, f)
+            os.replace(temp_file, self.state_file)
+        except Exception:
+            if os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                except OSError:
+                    pass
+            raise
+
+    def _load_last_processed_commit(self):
+        """Load the last commit processed"""
+        try:
+            if os.path.exists(self.state_file):
+                with open(self.state_file, 'r', encoding='utf-8') as f:
+                    state = json.load(f)
+                    return state.get('last_processed_commit')
+        except (IOError, json.JSONDecodeError) as e:
+            print(f"Error loading state file: {str(e)}")
+        return None
+
+    def _run_git_command(self, *args, max_retries=3):
+        """Run Git command with lock file with retries"""
+        delay = 1
+        for attempt in range(max_retries):
+            try:
+                return subprocess.run(
+                    ["git", *map(str, args)],
+                    cwd=self.markdown_dir,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    timeout=30,
+                )
+            except subprocess.CalledProcessError as e:
+                if "index.lock" in e.stderr.lower() and attempt < max_retries - 1:
+                    print(
+                        f"Git index.lock detected, retrying in {delay} seconds "
+                        f"(attempt {attempt + 1}/{max_retries})..."
+                    )
+                    time.sleep(delay)
+                    delay *= 2
+                    continue
+                # Preserve original traceback for debugging
+                raise
+            except subprocess.TimeoutExpired as exc:
+                cmd_str = " ".join(map(str, args))
+                raise RuntimeError(f"Git command timed out: {cmd_str}") from exc
+
+        raise RuntimeError("Unexpected error in Git command execution")
+
+
+    def _detect_git_branch(self):
+        """Auto-detect Git branch (main or master)"""
+        if self.branch_name:
+            return self.branch_name
+        
+        for branch in ["main", "master"]:
+            try:
+                self._run_git_command("rev-parse", "--verify", branch)
+                self.branch_name = branch
+                return branch
+            except subprocess.CalledProcessError:
+                continue
+        raise ValueError("Could not detect Git branch (tried 'main' and 'master')")
+
+
     def get_chroma_client(self, host, port, max_wait_time=120, initial_delay=2, max_delay=10):
         """
         Wait for ChromaDB to be fully ready before returning a client.
