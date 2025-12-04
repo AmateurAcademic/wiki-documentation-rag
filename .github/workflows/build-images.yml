@@ -6,11 +6,12 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_OWNER: ${{ github.repository_owner }}
+  IMAGE_OWNER: amateuracademic   # GHCR namespace / owner
 
 jobs:
   build-and-push-image:
     runs-on: ubuntu-latest
+    environment: git-registry    # 👈 this makes GIT_REGISTRY_KEY available
     permissions:
       contents: read
       packages: write
@@ -33,15 +34,16 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          # Username that owns the GHCR namespace and the PAT
+          username: amateuracademic
+          # 👇 this is your environment secret's name
+          password: ${{ secrets.GIT_REGISTRY_KEY }}
 
       - name: Extract metadata (tags, labels) for Docker
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/${{ matrix.service.name }}
-          # Add useful tags: branch name + latest on default branch
           tags: |
             type=ref,event=branch
             type=raw,value=latest,enable={{is_default_branch}}
