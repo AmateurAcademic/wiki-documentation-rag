@@ -116,6 +116,178 @@ class MarkdownHandler(FileSystemEventHandler):
                 continue
         raise ValueError("Could not detect Git branch (tried 'main' and 'master')")
 
+    
+    def _get_current_commit(self):
+        """Get the current HEAD commit hash"""
+        branch = self._detect_git_branch()
+        result = self._run_git_command("rev-parse", branch)
+        return result.stdout.strip()
+
+    def _get_changed_files(self, old_commit: str, new_commit: str):
+        """
+        Get changed files using Git diff with proper status handling.
+
+        Returns:
+            (changed_files, deleted_files) where each list contains absolute paths
+            under self.markdown_dir to .md files.
+        """
+        try:
+            # Use --name-status to get file status (M=modified, D=deleted, R=renamed, etc.)
+            result = self._run_git_command(
+                "diff",
+                "--name-status",
+                "--find-renames",
+                f"{old_commit}..{new_commit}",
+            )
+        except Exception as exc:  # fallback is part of the design here
+            print(f"Error getting changed files: {exc}")
+            # Fallback to scanning all files
+            return self._list_all_markdown_files(), []
+
+        changed_files = []
+        deleted_files = []
+
+        stdout = result.stdout.strip()
+        if not stdout:
+            print("Git diff found 0 changed files, 0 deleted files")
+            return changed_files, deleted_files
+
+        for line in stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+
+            parts = line.split("\t")
+            if len(parts) < 2:
+                continue
+
+            status = parts[0]
+            file_path = parts[1]
+
+            # Deleted
+            if status.startswith("D"):
+                if file_path.endswith(".md"):
+                    deleted_files.append(os.path.join(self.markdown_dir, file_path))
+                continue
+
+            # Renamed (RXXX where XXX is similarity %)
+            if status.startswith("R"):
+                old_path = parts[1]
+                new_path = parts[2] if len(parts) > 2 else file_path
+
+                if old_path.endswith(".md"):
+                    deleted_files.append(os.path.join(self.markdown_dir, old_path))
+                if new_path.endswith(".md"):
+                    changed_files.append(os.path.join(self.markdown_dir, new_path))
+                continue
+
+            # Modified (M), Added (A), Copied (C), etc.
+            if file_path.endswith(".md"):
+                changed_files.append(os.path.join(self.markdown_dir, file_path))
+
+        print(
+            f"Git diff found {len(changed_files)} changed files, "
+            f"{len(deleted_files)} deleted files"
+        )
+        return changed_files, deleted_files
+
+    def _list_all_markdown_files(self):
+        """List all markdown files for first-run fallback"""
+        files = []
+        for filepath in glob.glob(f"{self.markdown_dir}/**/*.md", recursive=True):
+            if os.path.exists(filepath) and os.path.isfile(filepath):
+                files.append(filepath)
+        return files
+
+    def _generate_content_based_id(self, content, source_path, chunk_index):
+        """Generate stable ID based on content to prevent duplicates"""
+        normalized_source = os.path.normpath(source_path)
+        identifier = f"{normalized_source}_{chunk_index}_{content}"
+        return hashlib.sha256(identifier.encode('utf-8')).hexdigest()[:32]
+
+    def _delete_chunks_for_files(self, file_paths, collection):
+        """Delete all chunks in ChromaDB for the given file paths"""
+        if not file_paths:
+            return
+        
+        try:
+            collection.delete(where={"source": {"$in": file_paths}})
+            print(f"Deleted chunks for {len(file_paths)} files from ChromaDB")
+        except Exception as e:
+            print(f"Error deleting chunks from ChromaDB: {str(e)}")
+
+    def _load_file_safely(self, file_path):
+        """Load file with multiple encoding attempts"""
+        encodings = ['utf-8', 'latin-1', 'cp1252']
+
+        for encoding in encodings:
+            try:
+                with open(file_path, 'r', encoding=encoding) as f:
+                    return f.read()
+            except UnicodeDecodeError:
+                continue
+            except Exception as e:
+                print(f"Error loading {file_path} with encoding {encoding}: {str(e)}")
+                return None
+        return None
+
+    def _process_and_upsert_files(self, file_paths, openai_client, chroma_collection):
+        """Process files and upsert to ChromaDB"""
+        all_chunks = []
+        all_contents = []
+        all_metadatas = []
+        all_ids = []
+
+        for file_path in file_paths:
+            print(f"Processing file: {file_path}")
+            content = self._load_file_safely(file_path)
+            if content is None:
+                continue
+
+            if not content.strip():
+                print(f"Skipping empty file: {file_path}")
+                continue
+
+            chunks = self.recursive_character_text_splitter(content)
+            print(f"Split into {len(chunks)} chunks")
+
+
+            for idx, chunk in enumerate(chunks):
+                chunk_id = self._generate_content_based_id(
+                    chunk['content'],
+                    file_path,
+                    idx
+                )
+
+                metadata = {
+                    'source': file_path,
+                    'chunk_index': str(idx),
+                    'original_length': str(len(content)),
+                    'processed_at': str(int(time.time()))
+                }
+                
+                all_chunks.append(chunk)
+                all_contents.append(chunk['content'])
+                all_metadatas.append(metadata)
+                all_ids.append(chunk_id)
+
+        if not all_chunks:
+            print(f"No valid chunks generated for any file")
+            return
+
+        print(f"Generating embeddings for {len(all_contents)} chunks...")
+        all_embeddings = self.generate_embeddings(openai_client, all_contents)
+
+        print(f"Upserting {len(all_chunks)} chunks to ChromaDB...")
+        chroma_collection.upsert(
+            embeddings=all_embeddings,
+            documents=all_contents,
+            metadatas=all_metadatas,
+            ids=all_ids
+        )
+
+        print(f"Processed {len(file_paths)} files")
+
 
     def get_chroma_client(self, host, port, max_wait_time=120, initial_delay=2, max_delay=10):
         """
@@ -160,6 +332,268 @@ class MarkdownHandler(FileSystemEventHandler):
         # If we timed out
         raise ConnectionError(f"ChromaDB at {host}:{port} not available after {max_wait_time} seconds")
 
+
+    def process_documents_fallback(self):
+        """Fallback to original processing method with content-based IDs"""
+        print("=== FALLBACK DOCUMENT PROCESSING STARTED ===")
+        try:
+            # Debug: Check directory structure
+            data_dir = self.data_dir
+            markdown_dir = self.markdown_dir
+            print(f"Data directory exists: {os.path.exists(data_dir)}")
+            print(f"Markdown directory exists: {os.path.exists(markdown_dir)}")
+            if os.path.exists(markdown_dir):
+                print(f"Markdown dir contents: {os.listdir(markdown_dir)}")
+            else:
+                print("Creating markdown directory...")
+                os.makedirs(markdown_dir, exist_ok=True)
+            
+            # Validate API key
+            nebius_api_key = os.getenv("NEBIUS_API_KEY", "").strip('"').strip("'")
+            if not nebius_api_key:
+                raise ValueError("NEBIUS_API_KEY environment variable is not set")
+            print("API key found, initializing clients...")
+            
+            # Get ChromaDB configuration
+            chroma_host = os.getenv("CHROMA_HOST", "chroma")
+            chroma_port = int(os.getenv("CHROMA_PORT", "8000"))
+            
+            # Wait for ChromaDB with our dedicated function
+            print("Waiting for ChromaDB to be ready...")
+            chroma_client = self.get_chroma_client(chroma_host, chroma_port)
+            
+            # Initialize OpenAI client
+            client = OpenAI(
+                api_key=nebius_api_key,
+                base_url="https://api.studio.nebius.com/v1/"
+            )
+            
+            # Clear existing chunks to prevent duplicates (transition strategy)
+            try:
+                collection = chroma_client.get_collection("documents")
+                print("Clearing existing chunks for clean transition...")
+                # Get all current document sources
+                existing_docs = collection.get(include=['metadatas'])
+                if existing_docs['ids']:
+                    sources = list(set([meta.get('source') for meta in existing_docs['metadatas'] if meta.get('source')]))
+                    self._delete_chunks_for_files(sources, collection)
+                    print(f"Cleared {len(sources)} file sources from database")
+            except Exception as e:
+                print(f"Warning: Could not clear existing chunks: {e}")
+                # Create new collection if needed
+                collection = chroma_client.create_collection(
+                    "documents",
+                    metadata={"hnsw:space": "cosine"},
+                    embedding_function=None
+                )
+            
+            documents = self.load_markdown_files(markdown_dir)
+            if not documents:
+                return
+            
+            # Split documents with content-based IDs
+            all_chunks = []
+            all_chunk_ids = []
+            
+            for document in documents:
+                chunks = self.recursive_character_text_splitter(
+                    document['content'], 
+                    chunk_size=1000, 
+                    overlap=200
+                )
+                for i, chunk in enumerate(chunks):
+                    # Generate content-based IDs
+                    chunk_id = self._generate_content_based_id(
+                        chunk['content'], 
+                        document['metadata']['source'], 
+                        i
+                    )
+                    
+                    chunk['metadata'].update({
+                        'source': document['metadata']['source'],
+                        'original_length': str(len(document['content'])),
+                        'chunk_index': str(i)
+                    })
+                    
+                    all_chunks.append(chunk)
+                    all_chunk_ids.append(chunk_id)
+            
+            print(f"Split into {len(all_chunks)} chunks")
+            
+            if not all_chunks:
+                return
+            
+            contents = [chunk['content'] for chunk in all_chunks]
+            
+            # Generate embeddings
+            all_embeddings = self.generate_embeddings(client, contents)
+            
+            # Use content-based IDs in upsert
+            print("Upserting documents to ChromaDB with content-based IDs...")
+            collection.upsert(
+                embeddings=all_embeddings,
+                documents=contents,
+                metadatas=[chunk['metadata'] for chunk in all_chunks],
+                ids=all_chunk_ids  # Content-based IDs instead of sequential
+            )
+            
+            print("Document processing complete!")
+            try:
+                print(f"Collection now contains {collection.count()} documents")
+            except Exception as e:
+                print(f"Could not get collection count: {e}")
+                
+        except Exception as e:
+            print(f"Error processing documents: {str(e)}")
+
+
+    def process_git_based_documents(self):
+        """Process documents based on Git changes."""
+        print("=== GIT-BASED DOCUMENT PROCESSING STARTED ===")
+        # Verify Git setup
+        if not self._verify_git_installed() or not self._is_git_repo():
+            print("Git is not installed or this is not a Git repository. Falling back to full processing.")
+            self.process_documents_fallback()
+            return
+
+        try:
+            current_commit = self._get_current_commit()
+            last_commit = self._load_last_processed_commit()
+
+            if last_commit is None:
+                print("No last processed commit found, processing all documents.")
+                changed_files = self._list_all_markdown_files()
+                deleted_files = []
+                is_first_run = True
+            elif last_commit == current_commit:
+                print("No new commits to process.")
+                return
+            else:
+                print(f"Processing changes from {last_commit} to {current_commit}")
+                changed_files, deleted_files = self._get_changed_files(last_commit, current_commit)
+                is_first_run = False
+
+            nebius_api_key = os.getenv("NEBIUS_API_KEY", "").strip('"').strip("'")
+            if not nebius_api_key:
+                raise ValueError("NEBIUS_API_KEY environment variable is not set")
+            
+            chroma_host = os.getenv("CHROMA_HOST", "chroma")
+            chroma_port = int(os.getenv("CHROMA_PORT", "8000"))
+            chroma_client = self.get_chroma_client(chroma_host, chroma_port)
+
+            client = OpenAI(
+                api_key=nebius_api_key,
+                base_url="https://api.studio.nebius.com/v1/"
+            )
+
+            try:
+                collection = chroma_client.get_collection("documents")
+                print("Using existing collection")
+            except Exception as e:
+                print(f"Creating new collection: {e}")
+                collection = chroma_client.create_collection(
+                    "documents",
+                    metadata={"hnsw:space": "cosine"},
+                    embedding_function=None
+                )
+                print("Created new collection")
+
+            if deleted_files:
+                print(f"Deleting chunks for {len(deleted_files)} deleted files...")
+                self._delete_chunks_for_files(deleted_files, collection)
+
+            if changed_files:
+                print(f"Processing {len(changed_files)} changed/added files...")
+                self._delete_chunks_for_files(changed_files, collection)
+                self._process_and_upsert_files(changed_files, client, collection)
+
+            if current_commit and (changed_files or deleted_files or is_first_run):
+                self._save_last_processed_commit(current_commit)
+                print(f"Updated last processed commit to {current_commit}")
+
+            
+            print("Git-based document processing complete!")
+
+        except Exception as e:
+            print(f"Error in Git-based document processing: {str(e)}")
+
+    def process_single_file_immediately(self, file_path):
+        """Process a single markdown file immediately without Git. This handles real-time file changes from watchdog."""
+        print(f"=== IMMEDIATE PROCESSING FOR FILE: {file_path} ===")
+        try:
+            nebius_api_key = os.getenv("NEBIUS_API_KEY", "").strip('"').strip("'")
+            if not nebius_api_key:
+                raise ValueError("NEBIUS_API_KEY environment variable is not set")
+            
+            chroma_host = os.getenv("CHROMA_HOST", "chroma")
+            chroma_port = int(os.getenv("CHROMA_PORT", "8000"))
+            chroma_client = self.get_chroma_client(chroma_host, chroma_port)
+
+            client = OpenAI(
+                api_key=nebius_api_key,
+                base_url="https://api.studio.nebius.com/v1/"
+            )
+
+            try:
+                collection = chroma_client.get_collection("documents")
+                print("Using existing collection")
+            except Exception as e:
+                print(f"Creating new collection: {e}")
+                collection = chroma_client.create_collection(
+                    "documents",
+                    metadata={"hnsw:space": "cosine"},
+                    embedding_function=None
+                )
+                print("Created new collection")
+
+            if not os.path.exists(file_path):
+                print(f"File {file_path} does not exist, skipping processing.")
+                return 
+
+            if os.path.getsize(file_path) == 0:
+                print(f"File {file_path} is empty, skipping processing.")
+                return
+
+            content = self._load_file_safely(file_path)
+            if content is None:
+                print(f"Could not load content from {file_path}, skipping processing.")
+                return
+
+            self._delete_chunks_for_files([file_path], collection)
+            chunks = self.recursive_character_text_splitter(content)
+            if not chunks:
+                print(f"No chunks generated for {file_path}, skipping upsert.")
+                return
+
+            all_contents = [chunk['content'] for chunk in chunks]
+            all_ids = [self._generate_content_based_id(chunk['content'], file_path, i)
+                          for i, chunk in enumerate(chunks)]
+            all_metadatas = []
+
+            for i, chunk in enumerate(chunks):
+                metadata = {
+                    'source': file_path,
+                    'chunk_index': str(i),
+                    'original_length': str(len(content)),
+                    'processed_at': str(int(time.time()))
+                }
+                all_metadatas.append(metadata)
+
+            embeddings = self.generate_embeddings(client, all_contents)
+
+            collection.upsert(
+                embeddings=embeddings,
+                documents=all_contents,
+                metadatas=all_metadatas,
+                ids=all_ids
+            )
+
+            print(f"Immediate processing complete for file: {file_path}")
+
+        except Exception as e:
+            print(f"Error processing file {file_path}: {str(e)}")
+
+
     def load_markdown_files(self, markdown_dir):
         """Load markdown files from the specified directory"""
         print(f"Searching for markdown files in: {markdown_dir}")
@@ -186,19 +620,35 @@ class MarkdownHandler(FileSystemEventHandler):
         return documents
         
     def on_modified(self, event):
+        """Handle file modification events with immediate processing"""
         if event.is_directory:
             return
-        if event.src_path.endswith('.md'):
-            current_time = time.time()
-            if current_time - self.last_processed > 5:
-                print(f"Detected modification: {event.src_path}")
-                self.process_documents()
-                self.last_processed = current_time
+
+        if not event.src_path.endswith('.md'):
+            return
+
+        current_time = time.time()
+        if current_time - self.last_processed > 5:
+            print(f"Detected modification: {event.src_path}")
+            self.process_single_file_immediately(event.src_path)
+            self.last_processed = current_time
                 
     def on_created(self, event):
-        if not event.is_directory and event.src_path.endswith('.md'):
-            print(f"Detected new file: {event.src_path}")
-            self.process_documents()
+        """Handle file creation events"""
+        if event.is_directory or not event.src_path.endswith('.md'):
+            return
+
+        print(f"Detected new file: {event.src_path}")
+        self.process_single_file_immediately(event.src_path)
+
+
+    def on_deleted(self, event):
+        """Handle file deletion events"""
+        if event.is_directory or not event.src_path.endswith('.md'):
+            return
+
+        print(f"Detected deleted file: {event.src_path}")
+        self.process_single_file_immediately(event.src_path)
             
     def recursive_character_text_splitter(self, text, chunk_size=1000, overlap=200):
         """Mimics LangChain's RecursiveCharacterTextSplitter"""
@@ -356,27 +806,33 @@ class MarkdownHandler(FileSystemEventHandler):
             
         except Exception as e:
             print(f"Error processing documents: {str(e)}")
-            import traceback
-            traceback.print_exc()
+
+    def startup_sync(self):
+        """Perform startup synchronization using Git-based processing."""
+        # Is git installed and is this a git repo?
+        if not self._verify_git_installed() or not self._is_git_repo():
+            print("Git is not installed or this is not a Git repository. Skipping startup sync.")
+            return
+        print("Performing startup Git-based synchronization...")
+        self.process_git_based_documents()
 
 def main():
+    """Main function to start the markdown ingester and watcher."""
     print("Waiting for ChromaDB to be ready...", flush=True)
     time.sleep(3)  # Small delay for service readiness
-    print("Starting document watcher...", flush=True)
-    print(f"Current working directory: {os.getcwd()}", flush=True)
+
+    
+    print("Checking for pending changes since last run..", flush=True)
     handler = MarkdownHandler()
-    markdown_dir = MarkdownHandler().markdown_dir
-    print(f"Data directory contents: {os.listdir(markdown_dir) if os.path.exists(markdown_dir) else 'NOT FOUND'}", flush=True)
-    
-    print("Running initial document processing...", flush=True)
-    handler.process_documents()  # Initial processing
-    
-    print("Setting up file watcher...", flush=True)
+    handler.startup_sync()
+
+
+    print("Starting document watcher for ongoing changes...", flush=True)
     observer = Observer()
-    observer.schedule(handler, markdown_dir, recursive=True)
+    observer.schedule(handler, handler.markdown_dir, recursive=True)
     observer.start()
-    print("File watcher started - monitoring for changes...", flush=True)
-    
+    print ("File watcher started - monitoring for changes...")
+
     try:
         while True:
             time.sleep(1)
@@ -384,6 +840,8 @@ def main():
         observer.stop()
         print("Stopping document watcher...", flush=True)
     observer.join()
+
+    return 0
 
 if __name__ == "__main__":
     main()
