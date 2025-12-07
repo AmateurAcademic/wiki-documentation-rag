@@ -31,6 +31,17 @@ class MarkdownHandler(FileSystemEventHandler):
         except (subprocess.CalledProcessError, FileNotFoundError):
             return False
 
+
+    def _configure_git_safe_directory(self) -> bool:
+        """Configure Git to trust the markdown directory (CVE-2022-24765)"""
+        try:
+            self._run_git_command("config", "--global", "--add", "safe.directory", self.markdown_dir)
+            print(f"Configured Git safe directory: {self.markdown_dir}")
+            return True
+        except Exception as e:
+            print(f"Failed to configure Git safe directory: {e}")
+            return False
+
     def _is_git_repo(self):
         """Verify we're in a Git repository"""
         try:
@@ -451,8 +462,18 @@ class MarkdownHandler(FileSystemEventHandler):
         """Process documents based on Git changes."""
         print("=== GIT-BASED DOCUMENT PROCESSING STARTED ===")
         # Verify Git setup
-        if not self._verify_git_installed() or not self._is_git_repo():
-            print("Git is not installed or this is not a Git repository. Falling back to full processing.")
+        if not self._verify_git_installed():
+            print("Git is not installed. Falling back to full processing.")
+            self.process_documents_fallback()
+            return
+
+        if not self._configure_git_safe_directory():
+            print("Failed to configure Git safe directory. Falling back to full processing.")
+            self.process_documents_fallback()
+            return
+
+        if not self._is_git_repo():
+            print("This is not a Git repository. Falling back to full processing.")
             self.process_documents_fallback()
             return
 
@@ -812,7 +833,6 @@ class MarkdownHandler(FileSystemEventHandler):
         # Is git installed and is this a git repo?
         if not self._verify_git_installed() or not self._is_git_repo():
             print("Git is not installed or this is not a Git repository. Skipping startup sync.")
-            return
         print("Performing startup Git-based synchronization...")
         self.process_git_based_documents()
 
