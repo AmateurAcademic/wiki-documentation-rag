@@ -217,6 +217,24 @@ async def parallel_search(query_embedding: List[float], query_text: str, k: int 
 
     return semantic_results, bm25_results
 
+def _filter_nonempty_results(results):
+    """
+    Remove empty / whitespace-only documents from ranked results.
+    Keeps the original (doc, score) pairs but drops useless chunks.
+    """
+    filtered = []
+    for doc, score in results:
+        # Handle dict vs string vs anything-else defensively
+        if isinstance(doc, dict):
+            content = str(doc.get("content", "")).strip()
+        else:
+            content = str(doc or "").strip()
+
+        if content:
+            filtered.append((doc, float(score)))
+    return filtered
+
+
 
 async def hybrid_search(query: str, k: int = 10, rerank_k: Optional[int] = None):
     """
@@ -283,9 +301,10 @@ async def hybrid_search(query: str, k: int = 10, rerank_k: Optional[int] = None)
         candidate_docs = [doc for doc, _ in combined_results[:max_candidates]]
 
         if not candidate_docs:
-            # Return top-k fused results without re-ranking
+            # Return top-k fused results without re-ranking, after filtering empties
             top_results = combined_results[:min(k, len(combined_results))]
-            return [(doc, float(score)) for doc, score in top_results]
+            top_results = _filter_nonempty_results(top_results)
+            return top_results[:min(k, len(top_results))]
 
         # Re-ranking with error handling
         try:
@@ -307,6 +326,9 @@ async def hybrid_search(query: str, k: int = 10, rerank_k: Optional[int] = None)
             # Sort by final score
             final_results.sort(key=lambda x: x[1], reverse=True)
 
+            # Filter out empty/whitespace-only chunks
+            final_results = _filter_nonempty_results(final_results)
+
             # IMPORTANT: clamp output to k here
             return final_results[:min(k, len(final_results))]
 
@@ -314,59 +336,12 @@ async def hybrid_search(query: str, k: int = 10, rerank_k: Optional[int] = None)
             print(f"Re-ranking failed: {e}")
             # Fall back to fused results without re-ranking, still respecting k
             top_results = combined_results[:min(k, len(combined_results))]
-            return [(doc, float(score)) for doc, score in top_results]
+            top_results = _filter_nonempty_results(top_results)
+            return top_results[:min(k, len(top_results))]
 
     except Exception as e:
         print(f"Search error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/retrieve", response_model=RetrievalResponse)
-async def retrieve_docs(input: RetrievalQueryInput):
-    """Retrieve documents with full ranking and re-ranking pipeline"""
-    try:
-        responses = []
-        for query in input.queries:
-            # hybrid_search now guarantees at most input.k results
-            ranked_results = await hybrid_search(query, input.k)
-
-            # Format results for regular API usage
-            results = [
-                f"[Score: {score:.2f}] {doc[:200]}..."  # Truncated preview
-                for doc, score in ranked_results
-            ]
-            responses.append(RetrievedDoc(query=query, results=results))
-        return RetrievalResponse(responses=responses)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/search")
-async def search_documents(request: ToolRequest):
-    """Search with full ranking pipeline for Open WebUI external tool"""
-    try:
-        query = request.body.get("query", "")
-        k = request.body.get("k", 10)
-        rerank_k = request.body.get("rerank_k", 5)
-
-        if not query:
-            raise HTTPException(status_code=400, detail="Query parameter is required")
-
-        # hybrid_search will clamp rerank_k to [1, k] and always return <= k docs
-        ranked_results = await hybrid_search(query, k, rerank_k)
-
-        # Format results with natural citation for Open WebUI external tool
-        results = [
-            format_result_for_openwebui(doc, score)
-            for doc, score in ranked_results
-        ]
-
-        return {"results": results}
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
 
 
 @app.get("/specification")
