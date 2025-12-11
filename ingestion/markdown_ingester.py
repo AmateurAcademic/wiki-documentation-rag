@@ -302,44 +302,44 @@ class MarkdownHandler(FileSystemEventHandler):
         print(f"Processed {len(file_paths)} files")
 
 
-def get_chroma_client(self, host, port, max_wait_time=120, initial_delay=2, max_delay=10):
-    """
-    Wait for ChromaDB to be fully ready before returning a client.
-    """
-    start_time = time.time()
-    delay = initial_delay
+    def get_chroma_client(self, host, port, max_wait_time=120, initial_delay=2, max_delay=10):
+        """
+        Wait for ChromaDB to be fully ready before returning a client.
+        """
+        start_time = time.time()
+        delay = initial_delay
 
-    print(f"Waiting for ChromaDB at {host}:{port} to become available (max wait: {max_wait_time}s)...", flush=True)
+        print(f"Waiting for ChromaDB at {host}:{port} to become available (max wait: {max_wait_time}s)...", flush=True)
 
-    while time.time() - start_time < max_wait_time:
-        try:
-            print("Creating Chroma HttpClient...", flush=True)
-            client = chromadb.HttpClient(host=host, port=port)
-
-            print("Calling Chroma heartbeat()...", flush=True)
-            # Prefer heartbeat over get_user_identity for readiness
+        while time.time() - start_time < max_wait_time:
             try:
-                hb = client.heartbeat()
-                print(f"Chroma heartbeat OK: {hb}", flush=True)
+                print("Creating Chroma HttpClient...", flush=True)
+                client = chromadb.HttpClient(host=host, port=port)
+
+                print("Calling Chroma heartbeat()...", flush=True)
+                # Prefer heartbeat over get_user_identity for readiness
+                try:
+                    hb = client.heartbeat()
+                    print(f"Chroma heartbeat OK: {hb}", flush=True)
+                except Exception as e:
+                    # Log but still treat as failure and retry
+                    print(f"Heartbeat call failed: {e}", flush=True)
+                    raise
+
+                elapsed = time.time() - start_time
+                print(f"Successfully connected to ChromaDB at {host}:{port}! (took {elapsed:.1f}s)", flush=True)
+                return client
+
             except Exception as e:
-                # Log but still treat as failure and retry
-                print(f"Heartbeat call failed: {e}", flush=True)
-                raise
+                elapsed = time.time() - start_time
+                print(f"ChromaDB not ready yet ({elapsed:.1f}s elapsed) - error: {repr(e)}", flush=True)
+                print(f"Retrying in {delay} seconds...", flush=True)
 
-            elapsed = time.time() - start_time
-            print(f"Successfully connected to ChromaDB at {host}:{port}! (took {elapsed:.1f}s)", flush=True)
-            return client
+                time.sleep(delay)
+                delay = min(delay * 1.5, max_delay)
 
-        except Exception as e:
-            elapsed = time.time() - start_time
-            print(f"ChromaDB not ready yet ({elapsed:.1f}s elapsed) - error: {repr(e)}", flush=True)
-            print(f"Retrying in {delay} seconds...", flush=True)
-
-            time.sleep(delay)
-            delay = min(delay * 1.5, max_delay)
-
-    # If we timed out
-    raise ConnectionError(f"ChromaDB at {host}:{port} not available after {max_wait_time} seconds")
+        # If we timed out
+        raise ConnectionError(f"ChromaDB at {host}:{port} not available after {max_wait_time} seconds")
 
 
 
