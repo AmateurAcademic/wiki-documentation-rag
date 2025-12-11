@@ -394,6 +394,53 @@ async def health_check():
         }
     }
 
+@app.post("/retrieve", response_model=RetrievalResponse)
+async def retrieve_docs(input: RetrievalQueryInput):
+    """Retrieve documents with full ranking and re-ranking pipeline"""
+    try:
+        responses = []
+        for query in input.queries:
+            # hybrid_search now guarantees at most input.k results
+            ranked_results = await hybrid_search(query, input.k)
+
+            # Format results for regular API usage
+            results = [
+                f"[Score: {score:.2f}] {doc[:200]}..."  # Truncated preview
+                for doc, score in ranked_results
+            ]
+            responses.append(RetrievedDoc(query=query, results=results))
+        return RetrievalResponse(responses=responses)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/search")
+async def search_documents(request: ToolRequest):
+    """Search with full ranking pipeline for Open WebUI external tool"""
+    try:
+        query = request.body.get("query", "")
+        k = request.body.get("k", 10)
+        rerank_k = request.body.get("rerank_k", 5)
+
+        if not query:
+            raise HTTPException(status_code=400, detail="Query parameter is required")
+
+        # hybrid_search will clamp rerank_k to [1, k] and always return <= k docs
+        ranked_results = await hybrid_search(query, k, rerank_k)
+
+        # Format results with natural citation for Open WebUI external tool
+        results = [
+            format_result_for_openwebui(doc, score)
+            for doc, score in ranked_results
+        ]
+
+        return {"results": results}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
+
 
 # Test endpoint for debugging
 @app.get("/test_embedding")
