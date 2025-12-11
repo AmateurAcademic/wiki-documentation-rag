@@ -15,7 +15,9 @@ class MarkdownHandler(FileSystemEventHandler):
         self.last_processed = 0
         self.data_dir = "/app/data"
         self.markdown_dir = "/app/data/markdown"
-        self.state_file = "/app/data/.git_processing_state.json"
+        self.state_dir = "/app/state"
+        os.makedirs(self.state_dir, exist_ok=True)
+        self.state_file = os.path.join(self.state_dir, ".git_processing_state.json")
         self.branch_name = None
 
     def _verify_git_installed(self):
@@ -737,104 +739,7 @@ class MarkdownHandler(FileSystemEventHandler):
         
         print(f"Generated {len(all_embeddings)} embeddings")
         return all_embeddings
-    
-    def process_documents(self):
-        """Process markdown documents and store them in ChromaDB."""
-        print("=== DOCUMENT PROCESSING STARTED ===")
-        try:
-            # Debug: Check directory structure
-            data_dir = self.data_dir
-            markdown_dir = self.markdown_dir
-            print(f"Data directory exists: {os.path.exists(data_dir)}")
-            print(f"Markdown directory exists: {os.path.exists(markdown_dir)}")
-            if os.path.exists(markdown_dir):
-                print(f"Markdown dir contents: {os.listdir(markdown_dir)}")
-            else:
-                print("Creating markdown directory...")
-                os.makedirs(markdown_dir, exist_ok=True)
-            
-            # Validate API key
-            nebius_api_key = os.getenv("NEBIUS_API_KEY", "").strip('"').strip("'")
-            if not nebius_api_key:
-                raise ValueError("NEBIUS_API_KEY environment variable is not set")
-            print("API key found, initializing clients...")
-            
-            # Get ChromaDB configuration
-            chroma_host = os.getenv("CHROMA_HOST", "chroma")
-            chroma_port = int(os.getenv("CHROMA_PORT", "8000"))
-            
-            # Wait for ChromaDB with our dedicated function
-            print("Waiting for ChromaDB to be ready...")
-            chroma_client = self.get_chroma_client(chroma_host, chroma_port)
-            
-            # Initialize OpenAI client
-            client = OpenAI(
-                api_key=nebius_api_key,
-                base_url="https://api.studio.nebius.com/v1/"
-            )
-                 
-            documents = self.load_markdown_files(markdown_dir)
-            if not documents:
-                return
-            
-            # Split documents
-            all_chunks = []
-            for document in documents:
-                chunks = self.recursive_character_text_splitter(
-                    document['content'], 
-                    chunk_size=1000, 
-                    overlap=200
-                )
-                for chunk in chunks:
-                    # Convert all metadata values to strings
-                    chunk['metadata'].update({
-                        'source': document['metadata']['source'],
-                        'original_length': str(len(document['content']))
-                    })
-                all_chunks.extend(chunks)
-            
-            print(f"Split into {len(all_chunks)} chunks")
 
-            contents = [chunk['content'] for chunk in all_chunks]
-            
-            # Generate embeddings
-            all_embeddings = self.generate_embeddings(client, contents)
-            
-            # Store in ChromaDB
-            try:
-                collection = chroma_client.get_collection("documents")
-                print("Using existing collection")
-            except Exception as e:
-                print(f"Creating new collection: {e}")
-                # Create new collection with correct dimension
-                collection = chroma_client.create_collection(
-                    "documents",
-                    metadata={"hnsw:space": "cosine"},
-                    embedding_function=None  # Let server handle embeddings
-                )
-                print("Created new collection")
-            
-            print("Upserting documents to ChromaDB...")
-            collection.upsert(
-                embeddings=all_embeddings,
-                documents=contents,
-                metadatas=[chunk['metadata'] for chunk in all_chunks],
-                ids=[f"doc_{i}" for i in range(len(all_chunks))]
-            )
-            
-            print("Document processing complete!")
-            print(f"Collection now contains {collection.count()} documents")
-            
-        except Exception as e:
-            print(f"Error processing documents: {str(e)}")
-
-    def startup_sync(self):
-        """Perform startup synchronization using Git-based processing."""
-        # Is git installed and is this a git repo?
-        if not self._verify_git_installed() or not self._is_git_repo():
-            print("Git is not installed or this is not a Git repository. Skipping startup sync.")
-        print("Performing startup Git-based synchronization...")
-        self.process_git_based_documents()
 
 def main():
     """Main function to start the markdown ingester and watcher."""
@@ -844,7 +749,7 @@ def main():
     
     print("Checking for pending changes since last run..", flush=True)
     handler = MarkdownHandler()
-    handler.startup_sync()
+    handler.process_git_based_documents()
 
 
     print("Starting document watcher for ongoing changes...", flush=True)
