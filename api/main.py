@@ -41,6 +41,41 @@ class AppState:
 
 app_state = AppState()
 
+WIKI_BASE_URL = os.getenv("WIKI_BASE_URL", "").rstrip("/")
+def _build_wiki_url_from_source(source_path: str) -> Optional[str]:
+    """
+    Convert a local markdown file path into a wiki URL.
+
+    Example:
+      source_path = "/app/data/markdown/hardware/magic-mirror.md"
+      WIKI_BASE_URL = "https://wiki.home"
+
+      -> "https://wiki.home/hardware/magic-mirror"
+    """
+    if not WIKI_BASE_URL or not source_path:
+        return None
+
+    # Normalize separators just in case
+    sp = str(source_path).replace("\\", "/")
+
+    marker = "/markdown/"
+    idx = sp.find(marker)
+    if idx != -1:
+        # keep everything after ".../markdown/"
+        rel = sp[idx + len(marker):]           # "hardware/magic-mirror.md"
+    else:
+        # fallback: just use the basename
+        rel = os.path.basename(sp)            # "magic-mirror.md"
+
+    # Strip extension
+    rel_no_ext, _ext = os.path.splitext(rel)  # "hardware/magic-mirror"
+
+    # Ensure it starts with a slash for clean joining
+    if not rel_no_ext.startswith("/"):
+        rel_no_ext = "/" + rel_no_ext         # "/hardware/magic-mirror"
+
+    return f"{WIKI_BASE_URL}{rel_no_ext}"
+
 
 @app.on_event("startup")
 async def startup_event():
@@ -98,8 +133,28 @@ def get_bm25_results(query, documents, k=10):
 
     # Get top k results
     top_indices = np.argpartition(scores, -k)[-k:] if len(scores) > k else range(len(scores))
-    results = [(documents[i], scores[i]) for i in top_indices if i < len(documents)]
-    return sorted(results, key=lambda x: x[1], reverse=True)
+    indexes_scores = [(int(i), float(scores[i])) for i in top_indices if i < len(documents)]
+    return sorted(indexes_scores, key=lambda x: x[1], reverse=True)
+
+def _doc_key(doc):
+    """
+    Build a stable key for a doc object for use in RRF.
+    Expects doc to be either:
+      - a dict with 'metadata' containing 'source' and 'chunk_index'
+      - or a plain string fallback
+    """
+    if isinstance(doc, dict):
+        meta = doc.get("metadata", {}) or {}
+        src = meta.get("source", "")
+        idx = meta.get("chunk_index", "")
+        if src or idx:
+            return f"{src}::{idx}"
+        # fallback: use content hash
+        content = str(doc.get("content", ""))
+        return f"content::{hash(content)}"
+    else:
+        # plain string fallback
+        return f"str::{hash(str(doc))}"
 
 
 def reciprocal_rank_fusion(results_list, weights=None, k=60):
@@ -114,13 +169,13 @@ def reciprocal_rank_fusion(results_list, weights=None, k=60):
     all_docs = {}
     for i, results in enumerate(results_list):
         for rank, (doc, score) in enumerate(results):
-            doc_id = hash(doc)
-            if doc_id not in all_docs:
-                all_docs[doc_id] = {
+            key = _doc_key(doc)
+            if key not in all_docs:
+                all_docs[key] = {
                     'doc': doc,
                     'score': 0.0
                 }
-            all_docs[doc_id]['score'] += weights[i] * (1.0 / (rank + k))
+            all_docs[key]['score'] += weights[i] * (1.0 / (rank + k))
 
     # Sort by score
     sorted_docs = sorted(all_docs.items(), key=lambda x: x[1]['score'], reverse=True)
@@ -128,26 +183,34 @@ def reciprocal_rank_fusion(results_list, weights=None, k=60):
 
 
 def format_result_for_openwebui(doc, score: float) -> str:
-    """Format document result with natural citation for Open WebUI external tool"""
+    """Format document result with natural citation for Open WebUI external tool."""
+    # Default values
     source = "document"
-    content = str(doc)
+    content = ""
+    url = None
 
-    # Handle different document formats
     if isinstance(doc, dict):
-        content = doc.get('content', str(doc))
-        if 'metadata' in doc and 'source' in doc['metadata']:
-            source = os.path.basename(doc['metadata']['source'])
-    elif hasattr(doc, 'metadata') and hasattr(doc.metadata, 'get'):
-        source_path = doc.metadata.get('source', '')
-        if source_path:
-            source = os.path.basename(source_path)
-    elif isinstance(doc, str) and 'Source: ' in doc:
-        # Extract source from formatted string
-        source_line = doc.split('\n')[0]
-        if source_line.startswith('Source: '):
-            source = source_line.replace('Source: ', '').split()[0]
+        content = str(doc.get("content", ""))
+        meta = doc.get("metadata", {}) or {}
 
-    return f"Source: {source} (relevance: {score:.2f})\n\n{content}"
+        source_path = meta.get("source", "")
+        if source_path:
+            base = os.path.basename(source_path)   # "magic-mirror.md"
+            name, _ext = os.path.splitext(base)    # "magic-mirror"
+            source = name or "document"
+            url = _build_wiki_url_from_source(source_path)
+        else:
+            # No source in metadata – just leave source="document"
+            pass
+    else:
+        # Extremely defensive fallback; shouldn't really happen with current code
+        content = str(doc)
+
+    header = f"Source: {source} (relevance: {score:.2f})"
+    if url:
+        header += f"\nURL: {url}"
+
+    return f"{header}\n\n{content}"
 
 
 async def run_semantic_search(query_embedding: List[float], k: int, collection):
@@ -159,17 +222,33 @@ async def run_semantic_search(query_embedding: List[float], k: int, collection):
         results = collection.query(
             query_embeddings=[query_embedding],  # Pre-computed embedding
             n_results=k * 2,
-            include=["documents", "distances"]
+            include=["documents", "distances", "metadatas"]
         )
 
         if not results['documents'][0]:
             return []
 
+        docs = results['documents'][0]
+        dists = results['distances'][0]
+        metas = results['metadatas'][0]
+
+        similarities = [1.0 - d for d in dists] 
+
+
+        semantic_results = [
+            (
+                {
+                    "content": doc,
+                    "metadata": metas[i] if i < len(metas) else {}
+                },
+                float(similarities[i])
+            )
+            for i, doc in enumerate(docs)
+        ]
+
         # Convert to standard format
-        return list(zip(
-            results['documents'][0],
-            [1.0 - d for d in results['distances'][0]]  # Convert distance to similarity
-        ))
+        return semantic_results
+        
     except Exception as e:
         print(f"Semantic search failed: {e}")
         return []
@@ -187,11 +266,27 @@ async def run_bm25_search(query: str, k: int, collection):
             limit=1000
         )
 
-        if not results['documents']:
+        docs = results['documents'] or []
+        metas = results['metadatas'] or []
+        
+        if not docs:
             return []
 
-        # Apply BM25 to document contents
-        return get_bm25_results(query, results['documents'], k=k * 2)
+        bm25_results = get_bm25_results(query, docs, k=k * 2)
+
+        docs_scores = [
+            (
+                {
+                    "content": docs[i],
+                    "metadata": metas[i] if i < len(metas) else {}
+                },
+                score,
+            )
+            for i, score in bm25_results
+            if 0 <= i < len(docs)
+        ]
+        return docs_scores
+
     except Exception as e:
         print(f"BM25 search failed: {e}")
         return []
@@ -308,7 +403,14 @@ async def hybrid_search(query: str, k: int = 10, rerank_k: Optional[int] = None)
 
         # Re-ranking with error handling
         try:
-            rerank_pairs = [(query, doc) for doc in candidate_docs]
+            rerank_pairs = []
+            for doc in candidate_docs:
+                if isinstance(doc, dict):
+                    content = str(doc.get("content", ""))
+                else:
+                    content = str(doc)
+                rerank_pairs.append((query, content))
+
             rerank_scores = app_state.reranker.predict(rerank_pairs)
 
             # Final scoring
@@ -403,12 +505,18 @@ async def retrieve_docs(input: RetrievalQueryInput):
             # hybrid_search now guarantees at most input.k results
             ranked_results = await hybrid_search(query, input.k)
 
-            # Format results for regular API usage
-            results = [
-                f"[Score: {score:.2f}] {doc[:200]}..."  # Truncated preview
-                for doc, score in ranked_results
-            ]
+            # Build string results (with preview) safely for dict docs
+            results = []
+            for doc, score in ranked_results:
+                if isinstance(doc, dict):
+                    text = str(doc.get("content", ""))
+                else:
+                    text = str(doc)
+                preview = text[:200]
+                results.append(f"[Score: {score:.2f}] {preview}...")
+
             responses.append(RetrievedDoc(query=query, results=results))
+
         return RetrievalResponse(responses=responses)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
