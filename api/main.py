@@ -496,7 +496,7 @@ async def health_check():
         }
     }
 
-@app.post("/retrieve", response_model=RetrievalResponse)
+@app.post("/retrieve", response_model=RetrievalResponse, include_in_schema=False)
 async def retrieve_docs(input: RetrievalQueryInput):
     """Retrieve documents with full ranking and re-ranking pipeline"""
     try:
