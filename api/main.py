@@ -475,7 +475,7 @@ async def root():
     return {"message": "Minimal Document Retriever API for Open WebUI"}
 
 
-@app.get("/health")
+@app.get("/health", include_in_schema=False)
 async def health_check():
     collection_status = "not_ready"
     if app_state.collection is not None:
@@ -551,7 +551,7 @@ async def search_documents(request: ToolRequest):
 
 
 # Test endpoint for debugging
-@app.get("/test_embedding")
+@app.get("/test_embedding", include_in_schema=False)
 async def test_embedding():
     if not app_state.client:
         raise HTTPException(status_code=500, detail="OpenAI client not initialized")
