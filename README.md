@@ -375,7 +375,7 @@ In **Open WebUI**:
 
 ### 2. Create a Custom Model with System Prompt
 
-To get the best behavior, create a **custom model definition** (or “evaluation” style model) that:
+To get the best behavior, create a **custom model definition** (In your "Workspace" or “evaluation” style model) that:
 
 * Wraps your base chat model (e.g. Qwen, GPT, etc.).
 * Uses a **fixed system prompt** that explains how and when to call the wiki search tool.
