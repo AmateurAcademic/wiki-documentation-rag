@@ -6,4 +6,8 @@ rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
 RUN pip install --no-cache-dir --root-user-action=ignore -r requirements.txt
 COPY . .
-CMD ["python", "-m", "markdown_ingester"]
+
+# copy the package
+COPY ingestion ./ingestion
+
+CMD ["python", "-m", "ingestion.markdown_ingester"]
