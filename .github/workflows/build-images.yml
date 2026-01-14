@@ -6,12 +6,12 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_OWNER: amateuracademic   # GHCR namespace / owner
+  IMAGE_OWNER: amateuracademic
 
 jobs:
   build-and-push-image:
     runs-on: ubuntu-latest
-    environment: git-registry    # 👈 this makes GIT_REGISTRY_KEY available
+    environment: git-registry
     permissions:
       contents: read
       packages: write
@@ -34,9 +34,7 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          # Username that owns the GHCR namespace and the PAT
           username: amateuracademic
-          # 👇 this is your environment secret's name
           password: ${{ secrets.GIT_REGISTRY_KEY }}
 
       - name: Extract metadata (tags, labels) for Docker
