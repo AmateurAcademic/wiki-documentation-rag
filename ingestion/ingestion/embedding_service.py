@@ -8,7 +8,7 @@ class EmbeddingService:
     def __init__(
         self,
         api_key: str,
-        api_base: str = "https://api.studio.nebius.com/v1/",
+        api_base: str = "https://api.tokenfactory.nebius.com/v1/",
         model: str = "Qwen/Qwen3-Embedding-8B",
         embedding_dimensions: int = 4096,
         batch_size: int = 10
