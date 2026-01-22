@@ -39,6 +39,10 @@ def build_app_state() -> AppState:
         backoff=settings.collection_backoff,
     )
 
+    # Connect to ChromaDB and acquire collection with backoff
+    chroma.connect()
+    chroma.get_collection_with_backoff()
+
     reranker = RerankerClient(settings.reranker_model)
 
     search_service = HybridSearchService(
