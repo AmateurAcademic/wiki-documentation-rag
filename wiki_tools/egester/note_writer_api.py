@@ -1,8 +1,14 @@
 # egester/note_writer_api.py
 import os
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 from .markdown_file_writer import MarkdownFileWriter
 from utils.git_handler import GitHandler
+
+class NoteRequest(BaseModel):
+    file_name: str
+    content: str
+    append: bool = False
 
 DATA_DIR = "/app/data"
 MARKDOWN_DIR = os.path.join(DATA_DIR, "markdown")
@@ -18,22 +24,22 @@ git_handler = GitHandler(
     )
 
 @app.post("/write_note")
-async def write_note(file_name: str, content: str, append: bool = False):
+async def write_note(req: NoteRequest):
     """API endpoint to write or append a markdown note and commit to Git."""
 
-    relative_file_path = os.path.join("ai_notes", file_name)
+    relative_file_path = os.path.join("ai_notes", req.file_name)
 
     file_path = os.path.join(MARKDOWN_DIR, relative_file_path)
     os.makedirs(os.path.dirname(file_path), exist_ok=True)
 
 
     markdown_file_writer.save_file(
-        content=content,
+        content=req.content,
         file_path=file_path,
-        append=append
+        append=req.append
     )
 
-    if append is False:
+    if req.append is False:
         commit_message = f"AI created {relative_file_path} (markdown)"
     else:
         commit_message = f"AI updated {relative_file_path} (markdown)"
