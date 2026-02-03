@@ -41,11 +41,11 @@ jobs:
           fi
 
           if [ "${{ steps.filter.outputs.ingester }}" = "true" ]; then
-            SERVICES+=('{"name":"wiki-rag-ingester","context":"./wiki_tools","dockerfile":"wiki_tools/ingester/Dockerfile"}')
+            SERVICES+=('{"name":"wiki-rag-ingester","context":"./wiki_tools/ingester","dockerfile":"wiki_tools/ingester/Dockerfile"}')
           fi
 
           if [ "${{ steps.filter.outputs.egester }}" = "true" ]; then
-            SERVICES+=('{"name":"wiki-rag-egester","context":"./wiki_tools","dockerfile":"wiki_tools/egester/Dockerfile"}')
+            SERVICES+=('{"name":"wiki-rag-egester","context":"./wiki_tools/egester","dockerfile":"wiki_tools/egester/Dockerfile"}')
           fi
 
           # If neither changed, output an empty matrix
