@@ -1,4 +1,4 @@
-version: '3.8'
+version: "3.8"
 
 services:
   chroma:
@@ -16,10 +16,7 @@ services:
         condition: any
 
   ingester:
-    image: ghcr.io/amateuracademic/wiki-rag-ingester:${GIT_BRANCH:-main}
-    build:
-      context: ./wiki_tools/ingester
-      dockerfile: Dockerfile
+    image: ghcr.io/amateuracademic/wiki-rag-ingester:${IMAGE_TAG:-latest}
     depends_on:
       - chroma
     environment:
@@ -28,7 +25,7 @@ services:
       - NEBIUS_API_KEY=${NEBIUS_API_KEY}
     volumes:
       - /root/docker_data/wiki:/app/data/markdown
-      - ingester_state:/app/state
+      - ingestion_state:/app/state
     networks:
       - internal
     deploy:
@@ -36,26 +33,20 @@ services:
         condition: any
 
   egester:
-    image: ghcr.io/amateuracademic/wiki-rag-egester:${GIT_BRANCH:-main}
-    build:
-      context: ./wiki_tools/egester
-      dockerfile: Dockerfile
-    environment:
-      - DATA_DIR=/app/data
+    image: ghcr.io/amateuracademic/wiki-rag-egester:${IMAGE_TAG:-latest}
     volumes:
       - /root/docker_data/wiki:/app/data/markdown
-      - egester_state:/app/state
+      - ingestion_state:/app/state
+    ports:
+      - "8002:8001"
     networks:
       - internal
-      - egester-network
-    ports:
-      - "8001:8001"  # For local testing
     deploy:
       restart_policy:
         condition: any
 
   api:
-    image: ghcr.io/amateuracademic/wiki-rag-api:latest
+    image: ghcr.io/amateuracademic/wiki-rag-api:${IMAGE_TAG:-latest}
     depends_on:
       - chroma
     environment:
@@ -66,23 +57,19 @@ services:
     ports:
       - "${API_PORT:-8000}:8000"
     networks:
-      - proxy      # For external access via NPM
-      - internal   # For chroma communication
-      - egester-network  # For egester communication
+      - proxy
+      - internal
     deploy:
       restart_policy:
         condition: any
 
 volumes:
   chroma_data:
-  ingester_state:
-  egester_state:
+  ingestion_state:
 
 networks:
   proxy:
-    external: true  # For Nginx Proxy Manager
+    external: true
   internal:
     driver: overlay
     attachable: true
-  egester-network:
-    driver: bridge
