@@ -3,8 +3,8 @@ name: Build and publish Docker images
 on:
   push:
     branches:
-      - 'main'
-      - 'feature/**'
+      - "main"
+      - "feature/**"
 
 env:
   REGISTRY: ghcr.io
@@ -27,8 +27,10 @@ jobs:
               - 'api/**'
             ingester:
               - 'wiki_tools/ingester/**'
+              - 'utils/**'
             egester:
               - 'wiki_tools/egester/**'
+              - 'utils/**'
 
       - name: Build matrix JSON
         id: set-matrix
@@ -40,15 +42,15 @@ jobs:
             SERVICES+=('{"name":"wiki-rag-api","context":"./api","dockerfile":"api/Dockerfile"}')
           fi
 
+          # Build tools using repo root context so they can COPY utils/
           if [ "${{ steps.filter.outputs.ingester }}" = "true" ]; then
-            SERVICES+=('{"name":"wiki-rag-ingester","context":"./wiki_tools/ingester","dockerfile":"Dockerfile"}')
+            SERVICES+=('{"name":"wiki-rag-ingester","context":".","dockerfile":"wiki_tools/ingester/Dockerfile"}')
           fi
 
           if [ "${{ steps.filter.outputs.egester }}" = "true" ]; then
-            SERVICES+=('{"name":"wiki-rag-egester","context":"./wiki_tools/egester","dockerfile":"Dockerfile"}')
+            SERVICES+=('{"name":"wiki-rag-egester","context":".","dockerfile":"wiki_tools/egester/Dockerfile"}')
           fi
 
-          # If neither changed, output an empty matrix
           JSON="{\"service\":["
           JSON+=$(IFS=,; echo "${SERVICES[*]}")
           JSON+="]}"
@@ -57,7 +59,8 @@ jobs:
 
   build-and-push-image:
     needs: changes
-    if: ${{ needs.changes.outputs.matrix != '{"service":[]}' }}
+    # Safer check than string-comparing JSON formatting
+    if: ${{ fromJson(needs.changes.outputs.matrix).service[0] != null }}
     runs-on: ubuntu-latest
     environment: git-registry
     permissions:
@@ -81,7 +84,7 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: amateuracademic
+          username: ${{ env.IMAGE_OWNER }}
           password: ${{ secrets.GIT_REGISTRY_KEY }}
 
       - name: Extract metadata (tags, labels) for Docker
@@ -98,7 +101,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.service.context }}
-          file: ${{ matrix.service.dockerfile || format('{0}/Dockerfile', matrix.service.context) }}
+          file: ${{ matrix.service.dockerfile }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
