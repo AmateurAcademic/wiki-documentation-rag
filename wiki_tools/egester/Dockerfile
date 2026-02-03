@@ -2,7 +2,10 @@ FROM python:3.13-slim
 WORKDIR /app
 
 COPY wiki_tools/egester/requirements.txt ./requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+RUN apt-get update && \
+    apt-get install -y git && \
+    rm -rf /var/lib/apt/lists/* && \
+    pip install --no-cache-dir -r requirements.txt
 
 COPY wiki_tools/utils/ ./utils/
 COPY wiki_tools/egester/ ./egester/
