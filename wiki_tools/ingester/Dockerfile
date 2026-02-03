@@ -7,7 +7,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/* && \
     pip install --no-cache-dir -r requirements.txt
 
-COPY ../utils/ ./utils/
+COPY ../../utils/ ./utils/
 COPY . ./ingester/
 
 CMD ["python", "-m", "ingester.markdown_ingester"]
