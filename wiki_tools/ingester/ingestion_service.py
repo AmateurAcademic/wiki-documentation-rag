@@ -1,8 +1,8 @@
-# ingestion/ingestion_service.py
+# ingester/ingestion_service.py
 import os
 import time
 from typing import List, Dict, Any
-from .git_repository import GitRepository
+from utils.git_handler import GitHandler
 from .markdown_processor import MarkdownProcessor
 from .embedding_service import EmbeddingService
 from .chroma_store import ChromaStore
@@ -12,7 +12,7 @@ class MarkdownIngestionService:
     
     def __init__(
         self,
-        git_repo: GitRepository,
+        git_repo: GitHandler,
         md_processor: MarkdownProcessor,
         embed_service: EmbeddingService,
         chroma_store: ChromaStore

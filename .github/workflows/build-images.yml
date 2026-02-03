@@ -2,7 +2,9 @@ name: Build and publish Docker images
 
 on:
   push:
-    branches: ['main']
+    branches:
+      - 'main'
+      - 'feature/**'
 
 env:
   REGISTRY: ghcr.io
@@ -23,8 +25,10 @@ jobs:
           filters: |
             api:
               - 'api/**'
-            ingestion:
-              - 'ingestion/**'
+            ingester:
+              - 'wiki_tools/ingester/**'
+            egester:
+              - 'wiki_tools/egester/**'
 
       - name: Build matrix JSON
         id: set-matrix
@@ -36,8 +40,12 @@ jobs:
             SERVICES+=('{"name":"wiki-rag-api","context":"./api"}')
           fi
 
-          if [ "${{ steps.filter.outputs.ingestion }}" = "true" ]; then
-            SERVICES+=('{"name":"wiki-rag-ingestion","context":"./ingestion"}')
+          if [ "${{ steps.filter.outputs.ingester }}" = "true" ]; then
+            SERVICES+=('{"name":"wiki-rag-ingester","context":"./wiki_tools","dockerfile":"ingester/dockerfile"}')
+          fi
+
+          if [ "${{ steps.filter.outputs.egester }}" = "true" ]; then
+            SERVICES+=('{"name":"wiki-rag-egester","context":"./wiki_tools","dockerfile":"egester/dockerfile"}')
           fi
 
           # If neither changed, output an empty matrix

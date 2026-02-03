@@ -446,7 +446,7 @@ Then, when you select this model in chat, it will:
 * **Refactor into Classes / Modules**
   The current API and ingester work, but the next step is splitting into:
 
-  * `GitRepository`, `MarkdownIO`, `EmbeddingService`, `ChromaStore`, `MarkdownIngestionService`, `MarkdownWatchHandler`, etc.
+  * `GitHandler`, `MarkdownIO`, `EmbeddingService`, `ChromaStore`, `MarkdownIngestionService`, `MarkdownWatchHandler`, etc.
     for better structure and testability.
 
 * **Replace Runtime Watcher with Git-Based Polling**

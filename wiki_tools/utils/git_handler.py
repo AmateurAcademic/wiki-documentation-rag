@@ -1,4 +1,4 @@
-# ingestion/git_repository.py
+# utils/git_handler.py
 import os
 import json
 import glob
@@ -6,7 +6,7 @@ import subprocess
 import time
 from typing import List, Tuple, Optional
 
-class GitRepository:
+class GitHandler:
     """
     Encapsulates Git operations and state for the markdown repo.
     Responsible for:
@@ -163,7 +163,6 @@ class GitRepository:
             print(f"Error loading state file: {e}")
         return None
 
-    # --------- internal helpers ---------
     def _run_git_command(self, *args, max_retries: int = 3):
         """Run a Git command in repo_dir with retry on index.lock."""
         delay = 1
@@ -213,3 +212,14 @@ class GitRepository:
             if os.path.exists(filepath) and os.path.isfile(filepath):
                 files.append(filepath)
         return files
+
+    def git_add_and_commit(self, file_path: str, commit_message: str) -> None:
+        """
+        Add a file to the git staging area and commit it with the provided message.
+        """
+        try:
+            self._run_git_command("add", file_path)
+            self._run_git_command("commit", "-m", commit_message)
+            print(f"Successfully added and committed {file_path}")
+        except Exception as e:
+            print(f"Error adding and committing {file_path}: {e}")

@@ -15,8 +15,11 @@ services:
       restart_policy:
         condition: any
 
-  ingestion:
-    image: ghcr.io/amateuracademic/wiki-rag-ingestion:latest
+  ingester:
+    image: ghcr.io/amateuracademic/wiki-rag-ingester:${GIT_BRANCH:-main}
+    build:
+      context: ./wiki_tools
+      dockerfile: ingester/dockerfile
     depends_on:
       - chroma
     environment:
@@ -25,9 +28,27 @@ services:
       - NEBIUS_API_KEY=${NEBIUS_API_KEY}
     volumes:
       - /root/docker_data/wiki:/app/data/markdown
-      - ingestion_state:/app/state
+      - ingester_state_${GIT_BRANCH:-main}:/app/state
     networks:
-      - internal
+      - wiki-tools-${GIT_BRANCH:-main}
+    deploy:
+      restart_policy:
+        condition: any
+
+  egester:
+    image: ghcr.io/amateuracademic/wiki-rag-egester:${GIT_BRANCH:-main}
+    build:
+      context: ./wiki_tools
+      dockerfile: egester/dockerfile
+    environment:
+      - DATA_DIR=/app/data
+    volumes:
+      - /root/docker_data/wiki:/app/data/markdown
+      - egester_state_${GIT_BRANCH:-main}:/app/state
+    networks:
+      - wiki-tools-${GIT_BRANCH:-main}
+    ports:
+      - "8001:8001"  # For local testing
     deploy:
       restart_policy:
         condition: any
@@ -46,13 +67,15 @@ services:
     networks:
       - proxy      # For external access via NPM
       - internal   # For chroma communication
+      - wiki-tools-${GIT_BRANCH:-main}  # For egester communication
     deploy:
       restart_policy:
         condition: any
 
 volumes:
   chroma_data:
-  ingestion_state:
+  ingester_state:
+  egester_state:
 
 networks:
   proxy:
@@ -60,3 +83,5 @@ networks:
   internal:
     driver: overlay
     attachable: true
+  wiki-tools-${GIT_BRANCH:-main}:
+    name: wiki-tools-${GIT_BRANCH:-main}

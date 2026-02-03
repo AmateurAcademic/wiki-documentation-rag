@@ -1,8 +1,8 @@
-# ingestion/markdown_ingester.py
+# ingester/markdown_ingester.py
 import os
 import time
 from watchdog.observers import Observer
-from .git_repository import GitRepository
+from utils.git_handler import GitHandler
 from .markdown_processor import MarkdownProcessor
 from .embedding_service import EmbeddingService
 from .chroma_store import ChromaStore
@@ -28,7 +28,7 @@ def main():
     chroma_port = int(os.getenv("CHROMA_PORT", "8000"))
     
     # Core components
-    git_repo = GitRepository(
+    git_repo = GitHandler(
         repo_dir=markdown_dir,
         state_file=os.path.join(state_dir, ".git_processing_state.json")
     )
