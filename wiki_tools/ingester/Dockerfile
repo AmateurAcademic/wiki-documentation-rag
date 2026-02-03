@@ -5,7 +5,7 @@ COPY ingester/requirements.txt .
 RUN apt-get update && \
     apt-get install -y git && \
     rm -rf /var/lib/apt/lists/* && \
-    pip install --no-cache-dir -r ingester/requirements.txt
+    pip install --no-cache-dir -r requirements.txt
 
 COPY utils/ ./utils/
 COPY ingester/ ./ingester/
