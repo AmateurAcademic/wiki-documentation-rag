@@ -17,6 +17,7 @@ services:
 
   ingester:
     image: ghcr.io/amateuracademic/wiki-rag-ingester:${IMAGE_TAG:-latest}
+    user: "1000:1000"
     depends_on:
       - chroma
     environment:
@@ -34,6 +35,7 @@ services:
 
   egester:
     image: ghcr.io/amateuracademic/wiki-rag-egester:${IMAGE_TAG:-latest}
+    user: "1000:1000"
     volumes:
       - /root/docker_data/wiki:/app/data/markdown
       - ingestion_state:/app/state
