@@ -37,15 +37,15 @@ jobs:
           SERVICES=()
 
           if [ "${{ steps.filter.outputs.api }}" = "true" ]; then
-            SERVICES+=('{"name":"wiki-rag-api","context":"./api"}')
+            SERVICES+=('{"name":"wiki-rag-api","context":"./api","dockerfile":"api/Dockerfile"}')
           fi
 
           if [ "${{ steps.filter.outputs.ingester }}" = "true" ]; then
-            SERVICES+=('{"name":"wiki-rag-ingester","context":"./wiki_tools","dockerfile":"ingester/dockerfile"}')
+            SERVICES+=('{"name":"wiki-rag-ingester","context":"./wiki_tools","dockerfile":"wiki_tools/ingester/Dockerfile"}')
           fi
 
           if [ "${{ steps.filter.outputs.egester }}" = "true" ]; then
-            SERVICES+=('{"name":"wiki-rag-egester","context":"./wiki_tools","dockerfile":"egester/dockerfile"}')
+            SERVICES+=('{"name":"wiki-rag-egester","context":"./wiki_tools","dockerfile":"wiki_tools/egester/Dockerfile"}')
           fi
 
           # If neither changed, output an empty matrix
@@ -98,6 +98,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.service.context }}
+          file: ${{ matrix.service.dockerfile || format('{0}/Dockerfile', matrix.service.context) }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
