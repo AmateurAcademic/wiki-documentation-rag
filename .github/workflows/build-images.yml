@@ -27,10 +27,10 @@ jobs:
               - 'api/**'
             ingester:
               - 'wiki_tools/ingester/**'
-              - 'utils/**'
+              - 'wiki_tools/utils/**'
             egester:
               - 'wiki_tools/egester/**'
-              - 'utils/**'
+              - 'wiki_tools/utils/**'
 
       - name: Build matrix JSON
         id: set-matrix

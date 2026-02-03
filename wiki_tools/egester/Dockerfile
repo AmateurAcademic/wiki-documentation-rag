@@ -4,7 +4,7 @@ WORKDIR /app
 COPY wiki_tools/egester/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY utils/ ./utils/
+COPY wiki_tools/utils/ ./utils/
 COPY wiki_tools/egester/ ./egester/
 
 EXPOSE 8001
