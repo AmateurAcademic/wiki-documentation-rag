@@ -36,6 +36,11 @@ services:
   egester:
     image: ghcr.io/amateuracademic/wiki-rag-egester:${IMAGE_TAG:-latest}
     user: "1000:1000"
+    environment:
+    - GIT_AUTHOR_NAME=wiki-bot
+    - GIT_AUTHOR_EMAIL=wiki-bot@local
+    - GIT_COMMITTER_NAME=wiki-bot
+    - GIT_COMMITTER_EMAIL=wiki-bot@local
     volumes:
       - /root/docker_data/wiki:/app/data/markdown
       - ingestion_state:/app/state

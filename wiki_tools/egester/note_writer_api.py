@@ -50,3 +50,9 @@ async def write_note(req: NoteRequest):
             git_handler.git_add_and_commit(file_path=file_path, commit_message=commit_message)
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Git operation failed: {str(e)}")
+
+    if not git_handler.verify_git_installed():
+        raise HTTPException(status_code=500, detail="git is not installed in egester image")
+
+    if not git_handler.is_git_repo():
+        raise HTTPException(status_code=500, detail=f"{MARKDOWN_DIR} is not a git repo")
