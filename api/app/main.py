@@ -1,13 +1,13 @@
 from fastapi import FastAPI, HTTPException
-from app.models import ToolRequest
+from app.models import ToolRequest, NoteStageResult, NoteCommitResult
 from app.dependencies import build_app_state
 from app.search.formatting import format_result_for_openwebui
 
 
 app = FastAPI(
-    title="Minimal Document Retriever API",
-    version="1.0.0",
-    description="Hybrid search with full ranking and re-ranking pipeline. Results formatted for Open WebUI.",
+    title="RAG Retriever and Note Writer API",
+    version="1.0.1",
+    description="RAG Document retriever API and a note Writing API for markdown-based wikis as an OpenWebUI Tool",
 )
 
 
@@ -19,7 +19,8 @@ async def startup_event() -> None:
 
 @app.post("/search")
 async def search_documents(request: ToolRequest) -> dict:
-    """Search with full ranking pipeline for Open WebUI external tool.
+    """
+    OpenWebUI external tool to search documents with RAG.
     
     Args:
         request: ToolRequest containing query parameters
@@ -54,23 +55,112 @@ async def search_documents(request: ToolRequest) -> dict:
         raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
 
 
+@app.post("/notes/stage", response_model=NoteStageResult)
+async def stage_note(request: ToolRequest) -> NoteStageResult:
+    """
+    Stage a note for later committing.
+    
+    Args:
+        request: ToolRequest containing note parameters
+    
+    Returns:
+        NoteStageResult with staging details
+
+    Raises:
+        HTTPException: For various error conditions (400 for bad request, 500 for server errors)
+    """
+
+    body = request.body
+    file_name = body.get("file_name", "")
+    content = body.get("content", "")
+    append = bool(body.get("append", False))
+
+    if not file_name:
+        raise HTTPException(status_code=400, detail="file_name is required")
+
+    if not content:
+        raise HTTPException(status_code=400, detail="content is required")
+
+    app_state = app.state.state
+    stage_id, path, expires_at = app_state.notes_service.stage_note(
+        file_name=file_name,
+        content=content,
+        append=append
+    )
+    return NoteStageResult(
+        stage_id=stage_id,
+        path=path,
+        expires_at=expires_at
+    )
+
+@app.post("/notes/commit", response_model=NoteCommitResult)
+async def commit_note(request: ToolRequest) -> NoteCommitResult:
+    """
+    Commit a staged note to the wiki repository.
+
+    Args:
+        request: ToolRequest containing stage_id of the note to commit
+    
+    Returns:
+        NoteCommitResult with commit details
+    
+    Raises:
+        HTTPException: For various error conditions (400 for bad request, 500 for server errors)
+    """
+    body = request.body
+    stage_id = body.get("stage_id", "")
+
+    if not stage_id:
+        raise HTTPException(status_code=400, detail="stage_id is required")
+
+    app_state = app.state.state
+    try:
+        path = await app_state.notes_service.commit_note(stage_id=stage_id)
+        return NoteCommitResult(
+            ok=True,
+            path=path
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Commit failed: {str(e)}")
+
 @app.get("/specification")
 async def get_specification():
     """Return API specification for Open WebUI integration."""
     return {
-        "name": "Minimal Document Retriever",
-        "description": "Semantic search with hybrid ranking and re-ranking. Results include natural citation formatting for Open WebUI.",
+        "name": "RAG Retriever and Note Writer API",
+        "description": "RAG Document retriever API and a note Writing API for markdown-based wikis as an OpenWebUI Tool",
         "endpoints": [{
             "name": "search_documents",
             "method": "POST",
             "path": "/search",
-            "description": "Search documents with full hybrid ranking pipeline",
+            "description": "OpenWebUI external tool to search documents with RAG",
             "parameters": [
                 {"name": "query", "type": "string", "required": True},
                 {"name": "k", "type": "integer", "required": False, "default": 10},
                 {"name": "rerank_k", "type": "integer", "required": False, "default": 5}
             ]
-        }]
+        },
+        {
+            "name": "stage_note",
+            "method": "POST",
+            "path": "/notes/stage",
+            "description": "Stage a note for later commit (use only after the user approves the content)",
+            "parameters": [
+                {"name": "file_name", "type": "string", "required": True},
+                {"name": "content", "type": "string", "required": True},
+                {"name": "append", "type": "boolean", "required": False, "default": False},
+            ],
+        },
+        {
+            "name": "commit_note",
+            "method": "POST",
+            "path": "/notes/commit",
+            "description": "Commit a previously staged note (use only after explicit user confirmation)",
+            "parameters": [
+                {"name": "stage_id", "type": "string", "required": True},
+            ],
+        }
+        ]
     }
 
 
@@ -89,12 +179,12 @@ async def root():
 @app.get("/health")
 async def health_check():
     """Detailed health check endpoint."""
-    st = app.state.state
+    app_state = app.state.state
     collection_status = "not_ready"
-    if st.chroma.collection is not None:
+    if app_state.chroma.collection is not None:
         try:
             # Check if collection has documents
-            count = st.chroma.collection.count()
+            count = app_state.chroma.collection.count()
             collection_status = f"ready ({count} documents)"
         except Exception:
             collection_status = "ready (count unavailable)"
@@ -102,9 +192,9 @@ async def health_check():
     return {
         "status": "healthy",
         "components": {
-            "openai": st.embeddings is not None,
+            "openai": app_state.embeddings is not None,
             "chromadb": collection_status,
-            "reranker": st.reranker is not None,
-            "embedding_dimension": st.settings.embedding_dim
+            "reranker": app_state.reranker is not None,
+            "embedding_dimension": app_state.settings.embedding_dim
         }
     }

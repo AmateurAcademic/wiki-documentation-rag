@@ -5,23 +5,14 @@ from app.clients.chroma_store import ChromaStore
 from app.clients.reranker_client import RerankerClient
 from app.search.service import HybridSearchService
 
+from app.clients.egester_client import EgesterClient
+from app.egestion.stage_store import StageStore
+from app.egestion.notes_service import NotesService
+
 
 def build_app_state() -> AppState:
-    """Composition root: only place that reads env-derived Settings.
+    """Composition root: only place that reads env-derived Settings and constructs AppState."""
     
-    Responsibilities:
-        - Initialize all application components
-        - Wire dependencies between components
-        - Handle component lifecycle setup
-        
-    Assumptions:
-        - Environment variables are properly set
-        - Required services are accessible
-        
-    Failure modes:
-        - Propagates initialization errors from components
-        - Raises ValueError for missing environment variables
-    """
     settings = Settings.from_env()
 
     embeddings = EmbeddingClient(
@@ -52,4 +43,20 @@ def build_app_state() -> AppState:
         reranker=reranker,
     )
 
-    return AppState(settings=settings, chroma=chroma, search_service=search_service)
+    stage_store = StageStore(ttl_seconds=settings.note_stage_ttl_seconds)
+
+    egester_client = EgesterClient(
+        base_url=settings.egester_base_url
+        )
+
+    notes_service = NotesService(
+        stage_store=stage_store,
+        egester_client=egester_client
+    )
+
+    return AppState(
+        settings=settings,
+        chroma=chroma,
+        search_service=search_service,
+        notes_service=notes_service
+        )

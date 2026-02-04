@@ -7,3 +7,4 @@ torch
 fastapi
 uvicorn[standard]
 sentence-transformers
+httpx

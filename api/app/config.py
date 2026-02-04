@@ -5,24 +5,11 @@ from dataclasses import dataclass
 
 @dataclass
 class Settings:
-    """Centralized application configuration with environment variable parsing.
-    
-    Responsibilities:
-        - Parse and validate environment variables
-        - Hold application constants
-        - Provide a single source of truth for configuration
-        
-    Assumptions:
-        - Environment variables are set before application startup
-        - All required environment variables are present
-        
-    Failure modes:
-        - Raises ValueError if required environment variables are missing
-    """
+    """Centralized application configuration with environment variable parsing."""
     
     # Nebius API configuration
     nebius_api_key: str
-    nebius_base_url: str = "https://api.studio.nebius.com/v1/"
+    nebius_base_url: str = "https://api.tokenfactory.nebius.com/v1/"
     
     # ChromaDB configuration
     chroma_host: str = "chroma"
@@ -39,6 +26,11 @@ class Settings:
     
     # Collection backoff parameters
     collection_backoff: dict = None
+
+
+    # Egester configuration
+    egester_base_url: str = "http://egester:8001"
+    note_stage_ttl_seconds: int = 600  # 10 minutes
     
     def __post_init__(self):
         """Initialize default values for complex types."""
@@ -63,6 +55,7 @@ class Settings:
         Raises:
             ValueError: If required environment variables are missing
         """
+
         nebius_api_key = os.getenv("NEBIUS_API_KEY", "").strip('"').strip("'")
         if not nebius_api_key:
             raise ValueError("NEBIUS_API_KEY environment variable is not set")
@@ -77,4 +70,6 @@ class Settings:
             reranker_model=os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3"),
             bm25_limit=int(os.getenv("BM25_LIMIT", "1000")),
             wiki_base_url=os.getenv("WIKI_BASE_URL", ""),
+            egester_base_url=os.getenv("EGESTER_BASE_URL", "http://egester:8001"),
+            note_stage_ttl_seconds=int(os.getenv("NOTE_STAGE_TTL_SECONDS", "600"))
         )

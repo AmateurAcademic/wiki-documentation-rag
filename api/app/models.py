@@ -18,3 +18,12 @@ class RetrievalResponse(BaseModel):
 
 class ToolRequest(BaseModel):
     body: Dict[str, Any]
+
+class NoteStageResult(BaseModel):
+    stage_id: str
+    path: str
+    expires_at: str
+
+class NoteCommitResult(BaseModel):
+    ok: bool
+    path: str
